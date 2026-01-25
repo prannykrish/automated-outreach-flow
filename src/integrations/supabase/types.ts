@@ -21,6 +21,7 @@ export type Database = {
           email: string
           firm_name: string
           first_name: string
+          last_name: string | null
           id: string
           notes: string | null
           paused: boolean
@@ -34,6 +35,7 @@ export type Database = {
           email: string
           firm_name: string
           first_name: string
+          last_name?: string | null
           id?: string
           notes?: string | null
           paused?: boolean
@@ -47,6 +49,7 @@ export type Database = {
           email?: string
           firm_name?: string
           first_name?: string
+          last_name?: string | null
           id?: string
           notes?: string | null
           paused?: boolean
@@ -73,40 +76,40 @@ export type Database = {
       }
       email_logs: {
         Row: {
-          body: string
           created_at: string
-          customer_id: string
+          customer_id: string | null
+          error_message: string | null
           id: string
-          scheduled_at: string | null
+          opened_at: string | null
+          replied_at: string | null
+          resend_id: string | null
           sent_at: string | null
           status: string
-          step_id: string | null
-          subject: string
-          template_id: string
+          template_id: string | null
         }
         Insert: {
-          body: string
           created_at?: string
-          customer_id: string
+          customer_id?: string | null
+          error_message?: string | null
           id?: string
-          scheduled_at?: string | null
+          opened_at?: string | null
+          replied_at?: string | null
+          resend_id?: string | null
           sent_at?: string | null
           status?: string
-          step_id?: string | null
-          subject: string
-          template_id: string
+          template_id?: string | null
         }
         Update: {
-          body?: string
           created_at?: string
-          customer_id?: string
+          customer_id?: string | null
+          error_message?: string | null
           id?: string
-          scheduled_at?: string | null
+          opened_at?: string | null
+          replied_at?: string | null
+          resend_id?: string | null
           sent_at?: string | null
           status?: string
-          step_id?: string | null
-          subject?: string
-          template_id?: string
+          template_id?: string | null
         }
         Relationships: [
           {
@@ -160,6 +163,7 @@ export type Database = {
         Row: {
           body: string
           created_at: string
+          folder_id: string | null
           id: string
           name: string
           stage: string
@@ -169,6 +173,7 @@ export type Database = {
         Insert: {
           body: string
           created_at?: string
+          folder_id?: string | null
           id?: string
           name: string
           stage?: string
@@ -178,10 +183,32 @@ export type Database = {
         Update: {
           body?: string
           created_at?: string
+          folder_id?: string | null
           id?: string
           name?: string
           stage?: string
           subject?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      template_folders: {
+        Row: {
+          created_at: string
+          id: string
+          name: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          name: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          name?: string
           updated_at?: string
         }
         Relationships: []
@@ -191,24 +218,27 @@ export type Database = {
           created_at: string
           customer_id: string
           id: string
-          processed: boolean
           scheduled_for: string
+          status: string
+          sent_at: string | null
           step_id: string
         }
         Insert: {
           created_at?: string
           customer_id: string
           id?: string
-          processed?: boolean
           scheduled_for: string
+          status?: string
+          sent_at?: string | null
           step_id: string
         }
         Update: {
           created_at?: string
           customer_id?: string
           id?: string
-          processed?: boolean
           scheduled_for?: string
+          status?: string
+          sent_at?: string | null
           step_id?: string
         }
         Relationships: [

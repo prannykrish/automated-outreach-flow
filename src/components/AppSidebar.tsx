@@ -1,4 +1,4 @@
-import { Mail, GitBranch, UserPlus, BarChart3, Menu } from "lucide-react";
+import { Mail, GitBranch, UserPlus, BarChart3, LineChart, Settings } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import {
   Sidebar,
@@ -19,6 +19,11 @@ const navItems = [
   { title: "Sequences", url: "/sequences", icon: GitBranch },
   { title: "Add Customers", url: "/customers", icon: UserPlus },
   { title: "Pipeline", url: "/pipeline", icon: BarChart3 },
+  { title: "Insights", url: "/insights", icon: LineChart },
+];
+
+const bottomNavItems = [
+  { title: "Settings", url: "/settings", icon: Settings },
 ];
 
 export function AppSidebar() {
@@ -33,7 +38,7 @@ export function AppSidebar() {
             <Mail className="h-4 w-4 text-primary-foreground" />
           </div>
           {!isCollapsed && (
-            <span className="font-semibold text-lg">ColdMail</span>
+            <span className="font-semibold text-lg">Mailzen</span>
           )}
         </div>
       </SidebarHeader>
@@ -43,6 +48,26 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu>
               {navItems.map((item) => (
+                <SidebarMenuItem key={item.title}>
+                  <SidebarMenuButton asChild tooltip={item.title}>
+                    <NavLink
+                      to={item.url}
+                      className="flex items-center gap-2"
+                      activeClassName="bg-sidebar-accent text-sidebar-accent-foreground"
+                    >
+                      <item.icon className="h-4 w-4" />
+                      <span>{item.title}</span>
+                    </NavLink>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+        <SidebarGroup className="mt-auto">
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {bottomNavItems.map((item) => (
                 <SidebarMenuItem key={item.title}>
                   <SidebarMenuButton asChild tooltip={item.title}>
                     <NavLink

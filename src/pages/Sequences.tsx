@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Plus, Edit, Trash2, GitBranch, ArrowDown, Clock } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
@@ -15,6 +16,8 @@ export default function Sequences() {
   const [isOpen, setIsOpen] = useState(false);
   const [editingSequence, setEditingSequence] = useState<any>(null);
   const [selectedSequence, setSelectedSequence] = useState<any>(null);
+  const [deleteConfirmSequenceId, setDeleteConfirmSequenceId] = useState<string | null>(null);
+  const [deleteConfirmStepId, setDeleteConfirmStepId] = useState<string | null>(null);
   const [formData, setFormData] = useState({ name: "", description: "" });
   const [stepForm, setStepForm] = useState({
     template_id: "",
@@ -278,7 +281,7 @@ export default function Sequences() {
                           size="sm"
                           onClick={(e) => {
                             e.stopPropagation();
-                            deleteSequenceMutation.mutate(sequence.id);
+                            setDeleteConfirmSequenceId(sequence.id);
                           }}
                           className="text-destructive hover:text-destructive"
                         >
@@ -332,7 +335,7 @@ export default function Sequences() {
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => deleteStepMutation.mutate(step.id)}
+                        onClick={() => setDeleteConfirmStepId(step.id)}
                         className="text-destructive hover:text-destructive"
                       >
                         <Trash2 className="h-4 w-4" />
@@ -419,6 +422,54 @@ export default function Sequences() {
           )}
         </div>
       </div>
+
+      {/* Delete Sequence Confirmation Dialog */}
+      <AlertDialog open={!!deleteConfirmSequenceId} onOpenChange={() => setDeleteConfirmSequenceId(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Sequence?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This action cannot be undone. The sequence "{sequences?.find(s => s.id === deleteConfirmSequenceId)?.name}" and all its steps will be permanently deleted.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="flex gap-3 justify-end">
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                deleteSequenceMutation.mutate(deleteConfirmSequenceId!);
+                setDeleteConfirmSequenceId(null);
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Delete Step Confirmation Dialog */}
+      <AlertDialog open={!!deleteConfirmStepId} onOpenChange={() => setDeleteConfirmStepId(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Step?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This action cannot be undone. The step will be permanently deleted from the sequence.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="flex gap-3 justify-end">
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                deleteStepMutation.mutate(deleteConfirmStepId!);
+                setDeleteConfirmStepId(null);
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
