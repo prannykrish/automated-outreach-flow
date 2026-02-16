@@ -18,12 +18,21 @@ import Landing from "./pages/Landing";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { RequireAuth } from "@/components/RequireAuth";
 import SuperAdmin from "@/pages/SuperAdmin";
+import Onboarding from "./pages/Onboarding";
 
 function HomeRoute() {
   const { session, loading } = useAuth();
   if (loading) return null;
   if (session) return <RequireAuth><Layout><Navigate to="/templates" replace /></Layout></RequireAuth>;
   return <Landing />;
+}
+
+function OnboardingRoute() {
+  const { user, loading, organizationId } = useAuth();
+  if (loading) return null;
+  if (!user) return <Navigate to="/auth" replace />;
+  if (organizationId) return <Navigate to="/templates" replace />;
+  return <Onboarding />;
 }
 
 
@@ -39,6 +48,7 @@ const App = () => (
           <AuthProvider>
             <Routes>
               <Route path="/auth" element={<AuthPage />} />
+              <Route path="/onboarding" element={<OnboardingRoute />} />
 
               <Route path="/" element={<HomeRoute />} />
 

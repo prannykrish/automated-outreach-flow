@@ -6,10 +6,12 @@ type AuthContextValue = {
   session: any | null;
   profile: any | null;
   organizationId: string | null;
+  hasPendingRequest: boolean;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<any>;
   signUp: (email: string, password: string, opts?: { first_name?: string; last_name?: string; name?: string }) => Promise<any>;
   signOut: () => Promise<void>;
+  refetchOrganization: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -19,6 +21,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [session, setSession] = useState<any | null>(null);
   const [profile, setProfile] = useState<any | null>(null);
   const [organizationId, setOrganizationId] = useState<string | null>(null);
+  const [hasPendingRequest, setHasPendingRequest] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const fetchProfile = async (userId: string) => {
@@ -35,14 +38,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const fetchOrganization = async (userId: string) => {
+  const fetchOrganization = async (userId?: string) => {
+    const uid = userId || user?.id;
+    if (!uid) return;
     try {
       const { data } = await supabase
         .from("organization_members")
         .select("organization_id")
-        .eq("user_id", userId)
+        .eq("user_id", uid)
         .maybeSingle();
       setOrganizationId(data?.organization_id ?? null);
+
+      // If no org, check for pending join request
+      if (!data?.organization_id) {
+        const { data: pending } = await supabase
+          .from("join_requests")
+          .select("id")
+          .eq("user_id", uid)
+          .eq("status", "pending")
+          .limit(1)
+          .maybeSingle();
+        setHasPendingRequest(!!pending);
+      } else {
+        setHasPendingRequest(false);
+      }
     } catch (err) {
       console.error("Error fetching organization:", err);
       setOrganizationId(null);
@@ -64,34 +83,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         if (sess?.user?.id) {
           // Use setTimeout to avoid Supabase deadlock
-          setTimeout(() => {
+          setTimeout(async () => {
             if (mounted) {
-              fetchProfile(sess.user.id);
-              fetchOrganization(sess.user.id);
+              await Promise.all([
+                fetchProfile(sess.user.id),
+                fetchOrganization(sess.user.id),
+              ]);
+              if (mounted) setLoading(false);
             }
           }, 0);
         } else {
           setProfile(null);
           setOrganizationId(null);
+          setLoading(false);
         }
-
-        setLoading(false);
       }
     );
 
     // Then check current session
-    supabase.auth.getSession().then(({ data: { session: sess } }) => {
+    supabase.auth.getSession().then(async ({ data: { session: sess } }) => {
       if (!mounted) return;
-      
+
       setSession(sess);
       setUser(sess?.user ?? null);
-      
+
       if (sess?.user?.id) {
-        fetchProfile(sess.user.id);
-        fetchOrganization(sess.user.id);
+        await Promise.all([
+          fetchProfile(sess.user.id),
+          fetchOrganization(sess.user.id),
+        ]);
       }
-      
-      setLoading(false);
+
+      if (mounted) setLoading(false);
     });
 
     return () => {
@@ -136,7 +159,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   return (
-    <AuthContext.Provider value={{ user, session, profile, organizationId, loading, signIn, signUp, signOut }}>
+    <AuthContext.Provider value={{ user, session, profile, organizationId, hasPendingRequest, loading, signIn, signUp, signOut, refetchOrganization: () => fetchOrganization() }}>
       {children}
     </AuthContext.Provider>
   );

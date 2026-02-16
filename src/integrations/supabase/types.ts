@@ -386,22 +386,70 @@ export type Database = {
           },
         ]
       }
+      join_requests: {
+        Row: {
+          id: string
+          user_id: string
+          organization_id: string
+          status: string
+          created_at: string | null
+          updated_at: string | null
+          reviewed_by: string | null
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          organization_id: string
+          status?: string
+          created_at?: string | null
+          updated_at?: string | null
+          reviewed_by?: string | null
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          organization_id?: string
+          status?: string
+          created_at?: string | null
+          updated_at?: string | null
+          reviewed_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "join_requests_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "join_requests_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       organizations: {
         Row: {
           created_at: string | null
           id: string
+          invite_code: string
           name: string
           updated_at: string | null
         }
         Insert: {
           created_at?: string | null
           id?: string
+          invite_code?: string
           name: string
           updated_at?: string | null
         }
         Update: {
           created_at?: string | null
           id?: string
+          invite_code?: string
           name?: string
           updated_at?: string | null
         }

@@ -17,7 +17,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Users, Globe, Mail, Plus, Trash2, Shield, CheckCircle, Eye, RefreshCw, Copy, Check, Clock, Loader2 } from "lucide-react";
+import { Users, Globe, Mail, Plus, Trash2, Shield, CheckCircle, Eye, RefreshCw, Copy, Check, Clock, Loader2, UserPlus, X } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
 
@@ -187,6 +187,23 @@ export default function Organization() {
         .from("organization_emails")
         .select("*")
         .eq("organization_id", organization.id)
+        .order("created_at", { ascending: true });
+      if (error) throw error;
+      return data;
+    },
+    enabled: !!organization?.id && !!session,
+  });
+
+  // Get pending join requests
+  const { data: joinRequests } = useQuery({
+    queryKey: ["join-requests", organization?.id, !!session],
+    queryFn: async () => {
+      if (!organization?.id) return [];
+      const { data, error } = await supabase
+        .from("join_requests")
+        .select("*, users(email, first_name, last_name, name)")
+        .eq("organization_id", organization.id)
+        .eq("status", "pending")
         .order("created_at", { ascending: true });
       if (error) throw error;
       return data;
@@ -439,6 +456,107 @@ export default function Organization() {
     },
   });
 
+  // Helper to send notification email
+  const sendNotificationEmail = async (to: string, subject: string, html: string) => {
+    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+    const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+    await fetch(`${supabaseUrl}/functions/v1/send`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${supabaseKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ to, subject, html, text: html.replace(/<[^>]+>/g, "") }),
+    });
+  };
+
+  // Approve join request
+  const approveRequestMutation = useMutation({
+    mutationFn: async (request: any) => {
+      // Update request status
+      const { error: updateError } = await supabase
+        .from("join_requests")
+        .update({ status: "approved", reviewed_by: user?.id, updated_at: new Date().toISOString() })
+        .eq("id", request.id);
+      if (updateError) throw updateError;
+
+      // Add user as member
+      const { error: memberError } = await supabase
+        .from("organization_members")
+        .insert({
+          organization_id: organization?.id,
+          user_id: request.user_id,
+          role: "member",
+        });
+      if (memberError) throw memberError;
+
+      // Send approval email
+      const email = request.users?.email;
+      if (email) {
+        try {
+          await sendNotificationEmail(
+            email,
+            `You've been approved to join ${organization?.name}`,
+            `<p>Your request to join <strong>${organization?.name}</strong> on Mora has been approved!</p><p>Log in to get started.</p>`
+          );
+        } catch {}
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["join-requests"] });
+      queryClient.invalidateQueries({ queryKey: ["org-members"] });
+      toast({ title: "Request approved" });
+    },
+    onError: (error) => {
+      toast({ title: "Error approving request", description: error.message, variant: "destructive" });
+    },
+  });
+
+  // Reject join request
+  const rejectRequestMutation = useMutation({
+    mutationFn: async (request: any) => {
+      const { error } = await supabase
+        .from("join_requests")
+        .update({ status: "rejected", reviewed_by: user?.id, updated_at: new Date().toISOString() })
+        .eq("id", request.id);
+      if (error) throw error;
+
+      const email = request.users?.email;
+      if (email) {
+        try {
+          await sendNotificationEmail(
+            email,
+            `Update on your request to join ${organization?.name}`,
+            `<p>Your request to join <strong>${organization?.name}</strong> on Mora was not approved.</p>`
+          );
+        } catch {}
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["join-requests"] });
+      toast({ title: "Request rejected" });
+    },
+    onError: (error) => {
+      toast({ title: "Error rejecting request", description: error.message, variant: "destructive" });
+    },
+  });
+
+  // Regenerate invite code
+  const regenerateCodeMutation = useMutation({
+    mutationFn: async () => {
+      const { data, error } = await supabase.rpc("regenerate_invite_code", { org_id: organization?.id });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["my-membership"] });
+      toast({ title: "Invite code regenerated" });
+    },
+    onError: (error) => {
+      toast({ title: "Error regenerating code", description: error.message, variant: "destructive" });
+    },
+  });
+
   if (membershipPending) {
     return (
       <div className="space-y-6">
@@ -497,6 +615,66 @@ export default function Organization() {
         <p className="text-muted-foreground">Manage {organization.name}</p>
       </div>
 
+      {/* Pending Join Requests */}
+      {joinRequests && joinRequests.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <UserPlus className="h-5 w-5" />
+              Pending Requests
+              <Badge variant="outline" className="ml-1">{joinRequests.length}</Badge>
+            </CardTitle>
+            <CardDescription>People requesting to join your organization</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>User</TableHead>
+                  <TableHead>Requested</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {joinRequests.map((req: any) => (
+                  <TableRow key={req.id}>
+                    <TableCell>
+                      <div>
+                        <p className="font-medium">{req.users?.name || req.users?.first_name || "Unknown"}</p>
+                        <p className="text-sm text-muted-foreground">{req.users?.email}</p>
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {format(new Date(req.created_at), "MMM d, yyyy")}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        <Button
+                          size="sm"
+                          onClick={() => approveRequestMutation.mutate(req)}
+                          disabled={approveRequestMutation.isPending || rejectRequestMutation.isPending}
+                        >
+                          <CheckCircle className="h-4 w-4 mr-1" />
+                          Approve
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => rejectRequestMutation.mutate(req)}
+                          disabled={approveRequestMutation.isPending || rejectRequestMutation.isPending}
+                        >
+                          <X className="h-4 w-4 text-destructive" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Members Section */}
       <Card>
         <CardHeader>
@@ -507,6 +685,34 @@ export default function Organization() {
                 Members
               </CardTitle>
               <CardDescription>{members?.length || 0} members in this organization</CardDescription>
+              <div className="flex items-center gap-2 mt-2">
+                <span className="text-xs text-muted-foreground">Invite Code:</span>
+                <code className="bg-muted px-2 py-0.5 rounded text-sm font-mono tracking-widest select-all">
+                  {(organization as any).invite_code || "—"}
+                </code>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6"
+                  onClick={() => {
+                    navigator.clipboard.writeText((organization as any).invite_code || "");
+                    setCopiedField("invite-code");
+                    setTimeout(() => setCopiedField(null), 2000);
+                  }}
+                >
+                  {copiedField === "invite-code" ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6"
+                  onClick={() => regenerateCodeMutation.mutate()}
+                  disabled={regenerateCodeMutation.isPending}
+                  title="Regenerate code"
+                >
+                  {regenerateCodeMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                </Button>
+              </div>
             </div>
             <Dialog open={showInviteDialog} onOpenChange={setShowInviteDialog}>
               <DialogTrigger asChild>
