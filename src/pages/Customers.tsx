@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useMemo, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -14,12 +14,14 @@ import { Plus, Upload, UserPlus, FileSpreadsheet, X, Check, AlertCircle, Calenda
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/contexts/AuthContext";
 
 interface ParsedCustomer {
   first_name: string;
   last_name: string;
   firm_name: string;
   email: string;
+  custom_fields: Record<string, string>;
   isValid: boolean;
   errors: string[];
 }
@@ -34,29 +36,36 @@ export default function Customers() {
     notes: "",
   });
   
-  // Scheduling state
   const [scheduledDate, setScheduledDate] = useState<Date | undefined>(undefined);
   const [scheduledTime, setScheduledTime] = useState("09:00");
+  const [sendImmediately, setSendImmediately] = useState(true);
   
-  // Bulk import state
   const [parsedCustomers, setParsedCustomers] = useState<ParsedCustomer[]>([]);
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
   const [bulkSequenceId, setBulkSequenceId] = useState("");
   const [bulkScheduledDate, setBulkScheduledDate] = useState<Date | undefined>(undefined);
   const [bulkScheduledTime, setBulkScheduledTime] = useState("09:00");
+  const [bulkSendImmediately, setBulkSendImmediately] = useState(true);
   const [fileName, setFileName] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
-  
+  const [customFieldValues, setCustomFieldValues] = useState<Record<string, string>>({});
+  const [bulkCustomFieldOverrides, setBulkCustomFieldOverrides] = useState<Record<number, Record<string, string>>>({});
+
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const { user, organizationId } = useAuth();
 
   const { data: sequences } = useQuery({
-    queryKey: ["sequences"],
+    queryKey: ["sequences", organizationId],
     queryFn: async () => {
-      const { data, error } = await supabase.from("email_sequences").select("*");
+      const { data, error } = await supabase
+        .from("email_sequences")
+        .select("*")
+        .eq("organization_id", organizationId!);
       if (error) throw error;
       return data;
     },
+    enabled: !!organizationId,
   });
 
   const { data: steps } = useQuery({
@@ -71,12 +80,97 @@ export default function Customers() {
     },
   });
 
-  const getScheduledDateTime = (date: Date | undefined, time: string): Date => {
+  const BUILTIN_PLACEHOLDERS = new Set([
+    "first name", "last name", "full name", "name", "firm name",
+    "company", "company name", "email",
+    "insert name", "insert first name", "insert last name",
+    "your name", "their name", "client name",
+  ]);
+
+  const isBuiltinPlaceholder = (name: string) =>
+    BUILTIN_PLACEHOLDERS.has(name.toLowerCase().trim());
+
+  const extractCustomFields = (stepsData: any[] | undefined) => {
+    if (!stepsData) return [];
+    const placeholders = new Set<string>();
+    for (const step of stepsData) {
+      const template = (step as any).email_templates;
+      if (!template) continue;
+      const text = `${template.subject || ""} ${template.body || ""}`;
+      for (const match of text.matchAll(/\[([^\]]+)\]/g)) {
+        if (!isBuiltinPlaceholder(match[1])) {
+          placeholders.add(match[1]);
+        }
+      }
+    }
+    return Array.from(placeholders).sort();
+  };
+
+  // Fetch templates for single-customer sequence
+  const { data: sequenceTemplates } = useQuery({
+    queryKey: ["sequence-templates", formData.sequence_id],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("sequence_steps")
+        .select("*, email_templates(subject, body)")
+        .eq("sequence_id", formData.sequence_id)
+        .order("step_order");
+      if (error) throw error;
+      return data;
+    },
+    enabled: !!formData.sequence_id,
+  });
+
+  const requiredCustomFields = useMemo(() => extractCustomFields(sequenceTemplates), [sequenceTemplates]);
+
+  // Fetch templates for bulk-import sequence
+  const { data: bulkSequenceTemplates } = useQuery({
+    queryKey: ["sequence-templates", bulkSequenceId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("sequence_steps")
+        .select("*, email_templates(subject, body)")
+        .eq("sequence_id", bulkSequenceId)
+        .order("step_order");
+      if (error) throw error;
+      return data;
+    },
+    enabled: !!bulkSequenceId,
+  });
+
+  const bulkRequiredCustomFields = useMemo(() => extractCustomFields(bulkSequenceTemplates), [bulkSequenceTemplates]);
+
+  // Reset custom field values when sequence changes
+  useEffect(() => {
+    setCustomFieldValues({});
+  }, [formData.sequence_id]);
+
+  const triggerEmailProcessing = async () => {
+    try {
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+      
+      await fetch(`${supabaseUrl}/functions/v1/process-emails`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${supabaseKey}`,
+          "Content-Type": "application/json",
+        },
+      });
+    } catch (err) {
+      console.error("Failed to trigger email processing:", err);
+    }
+  };
+
+  const getScheduledDateTime = (date: Date | undefined, time: string, immediate: boolean): Date => {
+    if (immediate) {
+      return new Date();
+    }
+    
     const scheduledFor = date ? new Date(date) : new Date();
     const [hours, minutes] = time.split(":").map(Number);
     scheduledFor.setHours(hours || 9, minutes || 0, 0, 0);
     
-    // If the scheduled time is in the past, use current time
     if (scheduledFor < new Date()) {
       return new Date();
     }
@@ -98,24 +192,33 @@ export default function Customers() {
           email: formData.email,
           sequence_id: formData.sequence_id || null,
           current_step_id: firstStep?.id || null,
+          custom_fields: Object.keys(customFieldValues).length > 0 ? customFieldValues : null,
           notes: formData.notes || null,
           status: "new",
+          user_id: user?.id ?? null,
+          organization_id: organizationId ?? null,
         })
         .select()
         .single();
 
       if (error) throw error;
 
-      // Schedule the first email if a sequence is assigned
       if (firstStep && customer) {
-        const scheduledFor = getScheduledDateTime(scheduledDate, scheduledTime);
+        const scheduledFor = getScheduledDateTime(scheduledDate, scheduledTime, sendImmediately);
         
         const { error: scheduleError } = await supabase.from("scheduled_sends").insert({
           customer_id: customer.id,
           step_id: firstStep.id,
           scheduled_for: scheduledFor.toISOString(),
+          status: "pending",
         });
         if (scheduleError) console.error("Failed to schedule first email:", scheduleError);
+        
+        if (sendImmediately) {
+          setTimeout(() => {
+            triggerEmailProcessing();
+          }, 500);
+        }
       }
 
       return customer;
@@ -130,9 +233,14 @@ export default function Customers() {
         sequence_id: "",
         notes: "",
       });
+      setCustomFieldValues({});
       setScheduledDate(undefined);
       setScheduledTime("09:00");
-      toast({ title: "Customer added successfully" });
+      setSendImmediately(true);
+      toast({ 
+        title: "Customer added successfully",
+        description: sendImmediately ? "Email will be sent shortly." : "Email scheduled."
+      });
     },
     onError: (error) => {
       toast({ title: "Error adding customer", description: error.message, variant: "destructive" });
@@ -150,9 +258,12 @@ export default function Customers() {
         last_name: c.last_name,
         firm_name: c.firm_name,
         email: c.email,
+        custom_fields: Object.keys(c.custom_fields).length > 0 ? c.custom_fields : null,
         sequence_id: bulkSequenceId || null,
         current_step_id: firstStep?.id || null,
         status: "new",
+        user_id: user?.id ?? null,
+        organization_id: organizationId ?? null,
       }));
 
       const { data: insertedCustomers, error } = await supabase
@@ -162,14 +273,14 @@ export default function Customers() {
 
       if (error) throw error;
 
-      // Schedule first emails for all imported customers if a sequence is selected
       if (firstStep && insertedCustomers) {
-        const scheduledFor = getScheduledDateTime(bulkScheduledDate, bulkScheduledTime);
+        const scheduledFor = getScheduledDateTime(bulkScheduledDate, bulkScheduledTime, bulkSendImmediately);
         
         const scheduledSends = insertedCustomers.map((customer) => ({
           customer_id: customer.id,
           step_id: firstStep.id,
           scheduled_for: scheduledFor.toISOString(),
+          status: "pending",
         }));
 
         const { error: scheduleError } = await supabase
@@ -177,14 +288,47 @@ export default function Customers() {
           .insert(scheduledSends);
           
         if (scheduleError) console.error("Failed to schedule emails:", scheduleError);
+        
+        if (bulkSendImmediately) {
+          setTimeout(() => {
+            triggerEmailProcessing();
+          }, 500);
+        }
       }
 
       return insertedCustomers;
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["customers"] });
-      toast({ title: `Successfully imported ${data?.length || 0} customers` });
-      clearBulkImport();
+      toast({
+        title: `Successfully imported ${data?.length || 0} customers`,
+        description: bulkSendImmediately ? "Emails will be sent shortly." : "Emails scheduled."
+      });
+      // Remove only the rows that were sent, keep the rest
+      const sentIndices = new Set(
+        parsedCustomers
+          .map((_, i) => i)
+          .filter((i) => selectedRows.has(i) && isBulkRowValid(parsedCustomers[i], i))
+      );
+      const remaining = parsedCustomers.filter((_, i) => !sentIndices.has(i));
+      if (remaining.length === 0) {
+        clearBulkImport();
+      } else {
+        setParsedCustomers(remaining);
+        setSelectedRows(new Set());
+        // Rebuild custom field overrides with new indices
+        const newOverrides: Record<number, Record<string, string>> = {};
+        let newIdx = 0;
+        parsedCustomers.forEach((_, oldIdx) => {
+          if (!sentIndices.has(oldIdx)) {
+            if (bulkCustomFieldOverrides[oldIdx]) {
+              newOverrides[newIdx] = bulkCustomFieldOverrides[oldIdx];
+            }
+            newIdx++;
+          }
+        });
+        setBulkCustomFieldOverrides(newOverrides);
+      }
     },
     onError: (error) => {
       toast({ title: "Error importing customers", description: error.message, variant: "destructive" });
@@ -212,15 +356,19 @@ export default function Customers() {
     const firmNameIdx = headers.findIndex((h) => 
       h === "firm_name" || h === "firmname" || h === "firm name" || h === "firm" || h === "company" || h === "company_name"
     );
-    const emailIdx = headers.findIndex((h) => 
+    const emailIdx = headers.findIndex((h) =>
       h === "email" || h === "email_address" || h === "emailaddress"
     );
+
+    // Identify extra columns for custom_fields
+    const knownIndices = new Set([firstNameIdx, lastNameIdx, firmNameIdx, emailIdx].filter((i) => i >= 0));
+    const originalHeaders = lines[0].split(",").map((h) => h.trim().replace(/"/g, ""));
 
     return lines.slice(1).map((line) => {
       const values: string[] = [];
       let current = "";
       let inQuotes = false;
-      
+
       for (const char of line) {
         if (char === '"') {
           inQuotes = !inQuotes;
@@ -238,6 +386,17 @@ export default function Customers() {
       const firm_name = firmNameIdx >= 0 ? values[firmNameIdx]?.replace(/"/g, "") || "" : "";
       const email = emailIdx >= 0 ? values[emailIdx]?.replace(/"/g, "") || "" : "";
 
+      // Collect extra columns into custom_fields
+      const custom_fields: Record<string, string> = {};
+      headers.forEach((_, idx) => {
+        if (!knownIndices.has(idx) && values[idx]) {
+          const val = values[idx].replace(/"/g, "").trim();
+          if (val) {
+            custom_fields[originalHeaders[idx]] = val;
+          }
+        }
+      });
+
       const errors: string[] = [];
       if (!first_name) errors.push("Missing first name");
       if (!last_name) errors.push("Missing last name");
@@ -250,6 +409,7 @@ export default function Customers() {
         last_name,
         firm_name,
         email,
+        custom_fields,
         isValid: errors.length === 0,
         errors,
       };
@@ -280,6 +440,8 @@ export default function Customers() {
     setBulkSequenceId("");
     setBulkScheduledDate(undefined);
     setBulkScheduledTime("09:00");
+    setBulkSendImmediately(true);
+    setBulkCustomFieldOverrides({});
     setFileName("");
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -296,13 +458,30 @@ export default function Customers() {
     setSelectedRows(newSelected);
   };
 
+  const getRowCustomFields = (customer: ParsedCustomer, index: number) => ({
+    ...customer.custom_fields,
+    ...(bulkCustomFieldOverrides[index] || {}),
+  });
+
+  const isBulkRowValid = (c: ParsedCustomer, index: number) => {
+    if (!c.isValid) return false;
+    if (bulkRequiredCustomFields.length === 0) return true;
+    const merged = getRowCustomFields(c, index);
+    return bulkRequiredCustomFields.every((f) => merged[f]?.trim());
+  };
+
+  const getMissingCustomFields = (c: ParsedCustomer, index: number) => {
+    const merged = getRowCustomFields(c, index);
+    return bulkRequiredCustomFields.filter((f) => !merged[f]?.trim());
+  };
+
   const toggleAllValid = () => {
     const validIndices = parsedCustomers
-      .map((c, i) => (c.isValid ? i : -1))
+      .map((c, i) => (isBulkRowValid(c, i) ? i : -1))
       .filter((i) => i >= 0);
-    
+
     const allSelected = validIndices.every((i) => selectedRows.has(i));
-    
+
     if (allSelected) {
       setSelectedRows(new Set());
     } else {
@@ -310,8 +489,20 @@ export default function Customers() {
     }
   };
 
+  const updateBulkCustomField = (rowIndex: number, field: string, value: string) => {
+    setBulkCustomFieldOverrides((prev) => ({
+      ...prev,
+      [rowIndex]: { ...(prev[rowIndex] || {}), [field]: value },
+    }));
+  };
+
   const handleBulkImport = () => {
-    const customersToImport = parsedCustomers.filter((_, i) => selectedRows.has(i) && parsedCustomers[i].isValid);
+    const customersToImport = parsedCustomers
+      .map((c, i) => ({
+        ...c,
+        custom_fields: { ...c.custom_fields, ...(bulkCustomFieldOverrides[i] || {}) },
+      }))
+      .filter((c, i) => selectedRows.has(i) && isBulkRowValid(parsedCustomers[i], i));
     if (customersToImport.length === 0) {
       toast({ title: "No valid customers selected", variant: "destructive" });
       return;
@@ -319,10 +510,9 @@ export default function Customers() {
     bulkImportMutation.mutate(customersToImport);
   };
 
-  const validCount = parsedCustomers.filter((c) => c.isValid).length;
-  const selectedValidCount = parsedCustomers.filter((c, i) => selectedRows.has(i) && c.isValid).length;
+  const validCount = parsedCustomers.filter((c, i) => isBulkRowValid(c, i)).length;
+  const selectedValidCount = parsedCustomers.filter((c, i) => selectedRows.has(i) && isBulkRowValid(c, i)).length;
 
-  // Generate time options (every 30 minutes)
   const timeOptions = [];
   for (let h = 0; h < 24; h++) {
     for (let m = 0; m < 60; m += 30) {
@@ -334,7 +524,6 @@ export default function Customers() {
     }
   }
 
-  // Format time for display
   const formatTimeDisplay = (time: string) => {
     try {
       const [hours, minutes] = time.split(":").map(Number);
@@ -345,17 +534,13 @@ export default function Customers() {
     }
   };
 
-  // Validate and normalize time input
   const handleTimeInput = (value: string, setter: (time: string) => void) => {
-    // Allow typing in progress
     setter(value);
   };
 
   const normalizeTimeOnBlur = (value: string, setter: (time: string) => void) => {
-    // Try to parse various time formats
     let normalized = value.trim();
     
-    // Handle formats like "9", "9:30", "9:30am", "9:30 am", "09:30", "930"
     const timeRegex = /^(\d{1,2}):?(\d{2})?\s*(am|pm)?$/i;
     const match = normalized.match(timeRegex);
     
@@ -364,11 +549,9 @@ export default function Customers() {
       const minutes = match[2] ? parseInt(match[2], 10) : 0;
       const period = match[3]?.toLowerCase();
       
-      // Convert to 24-hour format if am/pm specified
       if (period === "pm" && hours < 12) hours += 12;
       if (period === "am" && hours === 12) hours = 0;
       
-      // Validate ranges
       if (hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60) {
         const formattedTime = `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}`;
         setter(formattedTime);
@@ -376,7 +559,6 @@ export default function Customers() {
       }
     }
     
-    // If invalid, reset to default
     if (!value || !normalized) {
       setter("09:00");
     }
@@ -389,7 +571,6 @@ export default function Customers() {
         <p className="text-muted-foreground">Add new customers to your email sequences</p>
       </div>
 
-      {/* Bulk Import Preview */}
       {parsedCustomers.length > 0 && (
         <Card>
           <CardHeader>
@@ -409,7 +590,7 @@ export default function Customers() {
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid gap-4 md:grid-cols-3">
+            <div className="grid gap-4 md:grid-cols-4">
               <div>
                 <label className="text-sm font-medium">Assign to Sequence</label>
                 <Select value={bulkSequenceId} onValueChange={setBulkSequenceId}>
@@ -427,85 +608,114 @@ export default function Customers() {
               </div>
               
               <div>
-                <label className="text-sm font-medium">Start Date</label>
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant="outline"
-                      className={cn(
-                        "w-full justify-start text-left font-normal",
-                        !bulkScheduledDate && "text-muted-foreground"
-                      )}
-                    >
-                      <CalendarIcon className="mr-2 h-4 w-4" />
-                      {bulkScheduledDate ? format(bulkScheduledDate, "PPP") : "Pick a date"}
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-auto p-0" align="start">
-                    <Calendar
-                      mode="single"
-                      selected={bulkScheduledDate}
-                      onSelect={setBulkScheduledDate}
-                      disabled={(date) => date < new Date(new Date().setHours(0, 0, 0, 0))}
-                      initialFocus
-                    />
-                  </PopoverContent>
-                </Popover>
+                <label className="text-sm font-medium">When to Send</label>
+                <Select 
+                  value={bulkSendImmediately ? "now" : "scheduled"} 
+                  onValueChange={(v) => setBulkSendImmediately(v === "now")}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="now">Send Immediately</SelectItem>
+                    <SelectItem value="scheduled">Schedule for Later</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               
-              <div>
-                <label className="text-sm font-medium">Start Time</label>
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant="outline"
-                      className="w-full justify-start text-left font-normal"
-                    >
-                      <Clock className="mr-2 h-4 w-4" />
-                      {formatTimeDisplay(bulkScheduledTime)}
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-64 p-3" align="start">
-                    <div className="space-y-3">
-                      <div>
-                        <label className="text-xs text-muted-foreground">Type a time (e.g., 9:30am, 14:00)</label>
-                        <Input
-                          value={bulkScheduledTime}
-                          onChange={(e) => handleTimeInput(e.target.value, setBulkScheduledTime)}
-                          onBlur={(e) => normalizeTimeOnBlur(e.target.value, setBulkScheduledTime)}
-                          placeholder="9:00am"
-                          className="mt-1"
+              {!bulkSendImmediately && (
+                <>
+                  <div>
+                    <label className="text-sm font-medium">Start Date</label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="outline"
+                          className={cn(
+                            "w-full justify-start text-left font-normal",
+                            !bulkScheduledDate && "text-muted-foreground"
+                          )}
+                        >
+                          <CalendarIcon className="mr-2 h-4 w-4" />
+                          {bulkScheduledDate ? format(bulkScheduledDate, "PPP") : "Pick a date"}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-auto p-0" align="start">
+                        <Calendar
+                          mode="single"
+                          selected={bulkScheduledDate}
+                          onSelect={setBulkScheduledDate}
+                          disabled={(date) => date < new Date(new Date().setHours(0, 0, 0, 0))}
+                          initialFocus
                         />
-                      </div>
-                      <div className="border-t pt-2">
-                        <label className="text-xs text-muted-foreground">Or select a time</label>
-                        <div className="grid grid-cols-3 gap-1 mt-1 max-h-48 overflow-y-auto">
-                          {timeOptions.map((opt) => (
-                            <Button
-                              key={opt.value}
-                              variant={bulkScheduledTime === opt.value ? "default" : "ghost"}
-                              size="sm"
-                              className="text-xs"
-                              onClick={() => setBulkScheduledTime(opt.value)}
-                            >
-                              {opt.label}
-                            </Button>
-                          ))}
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                  
+                  <div>
+                    <label className="text-sm font-medium">Start Time</label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="outline"
+                          className="w-full justify-start text-left font-normal"
+                        >
+                          <Clock className="mr-2 h-4 w-4" />
+                          {formatTimeDisplay(bulkScheduledTime)}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-64 p-3" align="start">
+                        <div className="space-y-3">
+                          <div>
+                            <label className="text-xs text-muted-foreground">Type a time (e.g., 9:30am, 14:00)</label>
+                            <Input
+                              value={bulkScheduledTime}
+                              onChange={(e) => handleTimeInput(e.target.value, setBulkScheduledTime)}
+                              onBlur={(e) => normalizeTimeOnBlur(e.target.value, setBulkScheduledTime)}
+                              placeholder="9:00am"
+                              className="mt-1"
+                            />
+                          </div>
+                          <div className="border-t pt-2">
+                            <label className="text-xs text-muted-foreground">Or select a time</label>
+                            <div className="grid grid-cols-3 gap-1 mt-1 max-h-48 overflow-y-auto">
+                              {timeOptions.map((opt) => (
+                                <Button
+                                  key={opt.value}
+                                  variant={bulkScheduledTime === opt.value ? "default" : "ghost"}
+                                  size="sm"
+                                  className="text-xs"
+                                  onClick={() => setBulkScheduledTime(opt.value)}
+                                >
+                                  {opt.label}
+                                </Button>
+                              ))}
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                    </div>
-                  </PopoverContent>
-                </Popover>
-              </div>
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                </>
+              )}
             </div>
 
+            {bulkSequenceId && bulkRequiredCustomFields.length > 0 && (
+              <div className="p-3 bg-muted/50 rounded-lg">
+                <p className="text-sm font-medium">Required custom fields for this sequence:</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Include these in your CSV or fill them in below: {bulkRequiredCustomFields.join(", ")}
+                </p>
+              </div>
+            )}
+
             <div className="flex justify-end">
-              <Button 
-                onClick={handleBulkImport} 
+              <Button
+                onClick={handleBulkImport}
                 disabled={selectedValidCount === 0 || !bulkSequenceId || bulkImportMutation.isPending}
               >
                 <Upload className="mr-2 h-4 w-4" />
-                Import {selectedValidCount} Customers
+                {bulkSendImmediately ? `Import & Send to ${selectedValidCount} Customers` : `Import ${selectedValidCount} Customers`}
               </Button>
             </div>
 
@@ -523,40 +733,62 @@ export default function Customers() {
                     <TableHead>Last Name</TableHead>
                     <TableHead>Firm Name</TableHead>
                     <TableHead>Email</TableHead>
+                    {bulkRequiredCustomFields.map((field) => (
+                      <TableHead key={field}>{field}</TableHead>
+                    ))}
                     <TableHead className="w-12">Status</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {parsedCustomers.map((customer, index) => (
-                    <TableRow 
-                      key={index} 
-                      className={!customer.isValid ? "bg-destructive/10" : selectedRows.has(index) ? "bg-primary/5" : ""}
+                  {parsedCustomers.map((customer, index) => {
+                    const rowValid = isBulkRowValid(customer, index);
+                    const missingFields = getMissingCustomFields(customer, index);
+                    const allErrors = [
+                      ...customer.errors,
+                      ...missingFields.map((f) => `Missing: ${f}`),
+                    ];
+                    const merged = getRowCustomFields(customer, index);
+                    return (
+                    <TableRow
+                      key={index}
+                      className={!rowValid ? "bg-destructive/10" : selectedRows.has(index) ? "bg-primary/5" : ""}
                     >
                       <TableCell>
                         <Checkbox
                           checked={selectedRows.has(index)}
                           onCheckedChange={() => toggleRow(index)}
-                          disabled={!customer.isValid}
+                          disabled={!rowValid}
                         />
                       </TableCell>
                       <TableCell>{customer.first_name || <span className="text-destructive">Missing</span>}</TableCell>
                       <TableCell>{customer.last_name || <span className="text-destructive">Missing</span>}</TableCell>
                       <TableCell>{customer.firm_name || <span className="text-destructive">Missing</span>}</TableCell>
                       <TableCell>{customer.email || <span className="text-destructive">Missing</span>}</TableCell>
+                      {bulkRequiredCustomFields.map((field) => (
+                        <TableCell key={field}>
+                          <Input
+                            value={merged[field] || ""}
+                            onChange={(e) => updateBulkCustomField(index, field, e.target.value)}
+                            placeholder={field}
+                            className="h-8 text-xs min-w-[100px]"
+                          />
+                        </TableCell>
+                      ))}
                       <TableCell>
-                        {customer.isValid ? (
+                        {rowValid ? (
                           <Check className="h-4 w-4 text-green-600" />
                         ) : (
                           <div className="group relative">
                             <AlertCircle className="h-4 w-4 text-destructive" />
                             <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block bg-popover border rounded-md p-2 text-xs shadow-lg z-10 whitespace-nowrap">
-                              {customer.errors.join(", ")}
+                              {allErrors.join(", ")}
                             </div>
                           </div>
                         )}
                       </TableCell>
                     </TableRow>
-                  ))}
+                    );
+                  })}
                 </TableBody>
               </Table>
             </div>
@@ -565,7 +797,6 @@ export default function Customers() {
       )}
 
       <div className="grid gap-6 lg:grid-cols-2">
-        {/* Single Customer Form */}
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -634,85 +865,127 @@ export default function Customers() {
                 </Select>
               </div>
               
-              {/* Schedule section - only show when sequence is selected */}
               {formData.sequence_id && (
-                <div className="grid grid-cols-2 gap-4 p-4 bg-muted/50 rounded-lg">
+                <div className="p-4 bg-muted/50 rounded-lg space-y-4">
                   <div>
-                    <label className="text-sm font-medium">Start Date</label>
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <Button
-                          variant="outline"
-                          className={cn(
-                            "w-full justify-start text-left font-normal",
-                            !scheduledDate && "text-muted-foreground"
-                          )}
-                        >
-                          <CalendarIcon className="mr-2 h-4 w-4" />
-                          {scheduledDate ? format(scheduledDate, "PPP") : "Today"}
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent className="w-auto p-0" align="start">
-                        <Calendar
-                          mode="single"
-                          selected={scheduledDate}
-                          onSelect={setScheduledDate}
-                          disabled={(date) => date < new Date(new Date().setHours(0, 0, 0, 0))}
-                          initialFocus
-                        />
-                      </PopoverContent>
-                    </Popover>
+                    <label className="text-sm font-medium">When to Send</label>
+                    <Select 
+                      value={sendImmediately ? "now" : "scheduled"} 
+                      onValueChange={(v) => setSendImmediately(v === "now")}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="now">Send Immediately</SelectItem>
+                        <SelectItem value="scheduled">Schedule for Later</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </div>
-                  <div>
-                    <label className="text-sm font-medium">Start Time</label>
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <Button
-                          variant="outline"
-                          className="w-full justify-start text-left font-normal"
-                        >
-                          <Clock className="mr-2 h-4 w-4" />
-                          {formatTimeDisplay(scheduledTime)}
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent className="w-64 p-3" align="start">
-                        <div className="space-y-3">
-                          <div>
-                            <label className="text-xs text-muted-foreground">Type a time (e.g., 9:30am, 14:00)</label>
-                            <Input
-                              value={scheduledTime}
-                              onChange={(e) => handleTimeInput(e.target.value, setScheduledTime)}
-                              onBlur={(e) => normalizeTimeOnBlur(e.target.value, setScheduledTime)}
-                              placeholder="9:00am"
-                              className="mt-1"
+                  
+                  {!sendImmediately && (
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="text-sm font-medium">Start Date</label>
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <Button
+                              variant="outline"
+                              className={cn(
+                                "w-full justify-start text-left font-normal",
+                                !scheduledDate && "text-muted-foreground"
+                              )}
+                            >
+                              <CalendarIcon className="mr-2 h-4 w-4" />
+                              {scheduledDate ? format(scheduledDate, "PPP") : "Today"}
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-auto p-0" align="start">
+                            <Calendar
+                              mode="single"
+                              selected={scheduledDate}
+                              onSelect={setScheduledDate}
+                              disabled={(date) => date < new Date(new Date().setHours(0, 0, 0, 0))}
+                              initialFocus
                             />
-                          </div>
-                          <div className="border-t pt-2">
-                            <label className="text-xs text-muted-foreground">Or select a time</label>
-                            <div className="grid grid-cols-3 gap-1 mt-1 max-h-48 overflow-y-auto">
-                              {timeOptions.map((opt) => (
-                                <Button
-                                  key={opt.value}
-                                  variant={scheduledTime === opt.value ? "default" : "ghost"}
-                                  size="sm"
-                                  className="text-xs"
-                                  onClick={() => setScheduledTime(opt.value)}
-                                >
-                                  {opt.label}
-                                </Button>
-                              ))}
+                          </PopoverContent>
+                        </Popover>
+                      </div>
+                      <div>
+                        <label className="text-sm font-medium">Start Time</label>
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <Button
+                              variant="outline"
+                              className="w-full justify-start text-left font-normal"
+                            >
+                              <Clock className="mr-2 h-4 w-4" />
+                              {formatTimeDisplay(scheduledTime)}
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-64 p-3" align="start">
+                            <div className="space-y-3">
+                              <div>
+                                <label className="text-xs text-muted-foreground">Type a time (e.g., 9:30am, 14:00)</label>
+                                <Input
+                                  value={scheduledTime}
+                                  onChange={(e) => handleTimeInput(e.target.value, setScheduledTime)}
+                                  onBlur={(e) => normalizeTimeOnBlur(e.target.value, setScheduledTime)}
+                                  placeholder="9:00am"
+                                  className="mt-1"
+                                />
+                              </div>
+                              <div className="border-t pt-2">
+                                <label className="text-xs text-muted-foreground">Or select a time</label>
+                                <div className="grid grid-cols-3 gap-1 mt-1 max-h-48 overflow-y-auto">
+                                  {timeOptions.map((opt) => (
+                                    <Button
+                                      key={opt.value}
+                                      variant={scheduledTime === opt.value ? "default" : "ghost"}
+                                      size="sm"
+                                      className="text-xs"
+                                      onClick={() => setScheduledTime(opt.value)}
+                                    >
+                                      {opt.label}
+                                    </Button>
+                                  ))}
+                                </div>
+                              </div>
                             </div>
-                          </div>
-                        </div>
-                      </PopoverContent>
-                    </Popover>
-                  </div>
-                  <p className="col-span-2 text-xs text-muted-foreground">
-                    The first email will be sent at this time. Follow-ups will be scheduled based on your sequence settings.
+                          </PopoverContent>
+                        </Popover>
+                      </div>
+                    </div>
+                  )}
+                  
+                  <p className="text-xs text-muted-foreground">
+                    {sendImmediately 
+                      ? "The first email will be sent immediately. Follow-ups will be scheduled based on your sequence settings."
+                      : "The first email will be sent at this time. Follow-ups will be scheduled based on your sequence settings."
+                    }
                   </p>
                 </div>
               )}
               
+              {formData.sequence_id && requiredCustomFields.length > 0 && (
+                <div className="p-4 bg-muted/50 rounded-lg space-y-3">
+                  <div>
+                    <label className="text-sm font-medium">Custom Fields</label>
+                    <p className="text-xs text-muted-foreground">These placeholders are used in this sequence's templates</p>
+                  </div>
+                  {requiredCustomFields.map((field) => (
+                    <div key={field}>
+                      <label className="text-xs text-muted-foreground">{field}</label>
+                      <Input
+                        value={customFieldValues[field] || ""}
+                        onChange={(e) => setCustomFieldValues((prev) => ({ ...prev, [field]: e.target.value }))}
+                        placeholder={`Enter ${field.toLowerCase()}...`}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+
               <div>
                 <label className="text-sm font-medium">Notes</label>
                 <Textarea
@@ -725,16 +998,15 @@ export default function Customers() {
               <Button
                 type="submit"
                 className="w-full"
-                disabled={!formData.first_name || !formData.last_name || !formData.firm_name || !formData.email || !formData.sequence_id}
+                disabled={!formData.first_name || !formData.last_name || !formData.firm_name || !formData.email || !formData.sequence_id || createCustomerMutation.isPending || requiredCustomFields.some((f) => !customFieldValues[f]?.trim())}
               >
                 <Plus className="mr-2 h-4 w-4" />
-                Add Customer & Schedule Emails
+                {sendImmediately ? "Add Customer & Send Email" : "Add Customer & Schedule Email"}
               </Button>
             </form>
           </CardContent>
         </Card>
 
-        {/* Bulk Import */}
         <Card className={parsedCustomers.length === 0 ? "border-dashed" : ""}>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -771,35 +1043,6 @@ export default function Customers() {
         </Card>
       </div>
 
-      {/* Quick Add Tips */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Placeholder Guide</CardTitle>
-          <CardDescription>These placeholders will be replaced in your email templates</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="grid gap-4 md:grid-cols-3">
-            <div className="p-4 bg-muted rounded-lg">
-              <code className="text-primary font-mono">[First Name]</code>
-              <p className="text-sm text-muted-foreground mt-1">
-                Replaced with the customer's first name
-              </p>
-            </div>
-            <div className="p-4 bg-muted rounded-lg">
-              <code className="text-primary font-mono">[Firm Name]</code>
-              <p className="text-sm text-muted-foreground mt-1">
-                Replaced with the company/firm name
-              </p>
-            </div>
-            <div className="p-4 bg-muted rounded-lg">
-              <code className="text-primary font-mono">[Custom Field]</code>
-              <p className="text-sm text-muted-foreground mt-1">
-                For additional personalization
-              </p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import { supabase } from "@/integrations/supabase/client";
 
-const RESEND_API_KEY = import.meta.env.RESEND_API_KEY;
-const RESEND_FROM_EMAIL = import.meta.env.VITE_RESEND_FROM_EMAIL || "pranav@novationapp.com";
+const RESEND_API_KEY = import.meta.env.VITE_RESEND_API_KEY ?? import.meta.env.RESEND_API_KEY;
+const RESEND_FROM_EMAIL = import.meta.env.VITE_RESEND_FROM_EMAIL || import.meta.env.RESEND_FROM_EMAIL || "pranav@pranav-k.com";
 
 interface SendEmailParams {
   to: string;
@@ -41,6 +41,9 @@ export async function sendEmailViaResend(params: SendEmailParams) {
     const data = (await response.json()) as any;
     const resendId = data.id;
 
+    // fetch customer to include user_id on the log
+    const { data: customerRow } = await supabase.from("customers").select("user_id").eq("id", params.customerId).maybeSingle();
+
     // Log the email send
     const { error: logError } = await supabase.from("email_logs").insert({
       customer_id: params.customerId,
@@ -48,6 +51,7 @@ export async function sendEmailViaResend(params: SendEmailParams) {
       status: "sent",
       sent_at: new Date().toISOString(),
       resend_id: resendId,
+      user_id: customerRow?.user_id ?? null,
     });
 
     if (logError) {
@@ -58,6 +62,9 @@ export async function sendEmailViaResend(params: SendEmailParams) {
   } catch (error) {
     console.error("Failed to send email via Resend:", error);
 
+    // fetch customer to include user_id on the failed log
+    const { data: failedCustomerRow } = await supabase.from("customers").select("user_id").eq("id", params.customerId).maybeSingle();
+
     // Log the failed send
     const { error: logError } = await supabase.from("email_logs").insert({
       customer_id: params.customerId,
@@ -65,6 +72,7 @@ export async function sendEmailViaResend(params: SendEmailParams) {
       status: "failed",
       created_at: new Date().toISOString(),
       error_message: error instanceof Error ? error.message : "Unknown error",
+      user_id: failedCustomerRow?.user_id ?? null,
     });
 
     if (logError) {

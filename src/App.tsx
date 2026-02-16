@@ -12,6 +12,20 @@ import Pipeline from "./pages/Pipeline";
 import Insights from "./pages/Insights";
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
+import OrganizationPage from "@/pages/Organization";
+import AuthPage from "./pages/Auth";
+import Landing from "./pages/Landing";
+import { AuthProvider, useAuth } from "@/contexts/AuthContext";
+import { RequireAuth } from "@/components/RequireAuth";
+import SuperAdmin from "@/pages/SuperAdmin";
+
+function HomeRoute() {
+  const { session, loading } = useAuth();
+  if (loading) return null;
+  if (session) return <RequireAuth><Layout><Navigate to="/templates" replace /></Layout></RequireAuth>;
+  return <Landing />;
+}
+
 
 const queryClient = new QueryClient();
 
@@ -22,18 +36,103 @@ const App = () => (
         <Toaster />
         <Sonner />
         <BrowserRouter>
-          <Layout>
+          <AuthProvider>
             <Routes>
-              <Route path="/" element={<Navigate to="/templates" replace />} />
-              <Route path="/templates" element={<Templates />} />
-              <Route path="/sequences" element={<Sequences />} />
-              <Route path="/customers" element={<Customers />} />
-              <Route path="/pipeline" element={<Pipeline />} />
-              <Route path="/insights" element={<Insights />} />
-              <Route path="/settings" element={<Settings />} />
+              <Route path="/auth" element={<AuthPage />} />
+
+              <Route path="/" element={<HomeRoute />} />
+
+              <Route
+                path="/templates"
+                element={
+                  <RequireAuth>
+                    <Layout>
+                      <Templates />
+                    </Layout>
+                  </RequireAuth>
+                }
+              />
+
+              <Route
+                path="/sequences"
+                element={
+                  <RequireAuth>
+                    <Layout>
+                      <Sequences />
+                    </Layout>
+                  </RequireAuth>
+                }
+              />
+
+              <Route
+                path="/customers"
+                element={
+                  <RequireAuth>
+                    <Layout>
+                      <Customers />
+                    </Layout>
+                  </RequireAuth>
+                }
+              />
+
+              <Route
+                path="/pipeline"
+                element={
+                  <RequireAuth>
+                    <Layout>
+                      <Pipeline />
+                    </Layout>
+                  </RequireAuth>
+                }
+              />
+
+              <Route
+                path="/insights"
+                element={
+                  <RequireAuth>
+                    <Layout>
+                      <Insights />
+                    </Layout>
+                  </RequireAuth>
+                }
+              />
+
+              <Route
+                path="/settings"
+                element={
+                  <RequireAuth>
+                    <Layout>
+                      <Settings />
+                    </Layout>
+                  </RequireAuth>
+                }
+              />
+
+              <Route
+                path="/organization"
+                element={
+                  <RequireAuth>
+                    <Layout>
+                      <OrganizationPage />
+                    </Layout>
+                  </RequireAuth>
+                }
+              />
+
+              <Route
+  path="/super-admin"
+  element={
+    <RequireAuth>
+      <Layout>
+        <SuperAdmin />
+      </Layout>
+    </RequireAuth>
+  }
+/>
+
               <Route path="*" element={<NotFound />} />
             </Routes>
-          </Layout>
+          </AuthProvider>
         </BrowserRouter>
       </TooltipProvider>
     </ThemeProvider>

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -9,16 +10,18 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Plus, Edit, Trash2, GitBranch, ArrowDown, Clock } from "lucide-react";
+import { Plus, Edit, Trash2, GitBranch, ArrowDown, Clock, Mail } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 export default function Sequences() {
+  const { user, organizationId: orgId } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
   const [editingSequence, setEditingSequence] = useState<any>(null);
   const [selectedSequence, setSelectedSequence] = useState<any>(null);
   const [deleteConfirmSequenceId, setDeleteConfirmSequenceId] = useState<string | null>(null);
   const [deleteConfirmStepId, setDeleteConfirmStepId] = useState<string | null>(null);
-  const [formData, setFormData] = useState({ name: "", description: "" });
+  const [editingStep, setEditingStep] = useState<any>(null);
+  const [formData, setFormData] = useState({ name: "", description: "", organization_email_id: "" });
   const [stepForm, setStepForm] = useState({
     template_id: "",
     delay_days: 0,
@@ -28,25 +31,65 @@ export default function Sequences() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
+  // Fetch verified org emails (only from verified domains)
+  const { data: orgEmails } = useQuery({
+    queryKey: ["org-emails-verified", orgId],
+    queryFn: async () => {
+      if (!orgId) return [];
+      // Get verified domains for this org
+      const { data: verifiedDomains } = await supabase
+        .from("organization_domains")
+        .select("domain")
+        .eq("organization_id", orgId)
+        .eq("verified", true);
+
+      const domainNames = verifiedDomains?.map((d) => d.domain) || [];
+      if (domainNames.length === 0) return [];
+
+      // Get all org emails
+      const { data: emails, error } = await supabase
+        .from("organization_emails")
+        .select("*")
+        .eq("organization_id", orgId)
+        .order("is_default", { ascending: false });
+      if (error) throw error;
+
+      // Filter to only emails from verified domains
+      return (emails || []).filter((e) => {
+        const emailDomain = e.email.split("@")[1];
+        return domainNames.includes(emailDomain);
+      });
+    },
+    enabled: !!orgId,
+  });
+
+  const defaultEmailId = orgEmails?.find((e) => e.is_default)?.id || orgEmails?.[0]?.id || "";
+
   const { data: sequences, isLoading } = useQuery({
-    queryKey: ["sequences"],
+    queryKey: ["sequences", orgId],
     queryFn: async () => {
       const { data, error } = await supabase
         .from("email_sequences")
-        .select("*")
+        .select("*, organization_emails(*)")
+        .eq("organization_id", orgId!)
         .order("created_at", { ascending: false });
       if (error) throw error;
       return data;
     },
+    enabled: !!orgId,
   });
 
   const { data: templates } = useQuery({
-    queryKey: ["templates"],
+    queryKey: ["templates", orgId],
     queryFn: async () => {
-      const { data, error } = await supabase.from("email_templates").select("*");
+      const { data, error } = await supabase
+        .from("email_templates")
+        .select("*")
+        .eq("organization_id", orgId!);
       if (error) throw error;
       return data;
     },
+    enabled: !!orgId,
   });
 
   const { data: steps } = useQuery({
@@ -66,13 +109,19 @@ export default function Sequences() {
 
   const createSequenceMutation = useMutation({
     mutationFn: async (data: typeof formData) => {
-      const { error } = await supabase.from("email_sequences").insert(data);
+      const { error } = await supabase.from("email_sequences").insert({
+        name: data.name,
+        description: data.description || null,
+        organization_email_id: data.organization_email_id || null,
+        organization_id: orgId || null,
+        user_id: user?.id || null,
+      });
       if (error) throw error;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["sequences"] });
       setIsOpen(false);
-      setFormData({ name: "", description: "" });
+      setFormData({ name: "", description: "", organization_email_id: "" });
       toast({ title: "Sequence created successfully" });
     },
     onError: (error) => {
@@ -83,14 +132,21 @@ export default function Sequences() {
   const updateSequenceMutation = useMutation({
     mutationFn: async (data: typeof formData & { id: string }) => {
       const { id, ...rest } = data;
-      const { error } = await supabase.from("email_sequences").update(rest).eq("id", id);
+      const { error } = await supabase
+        .from("email_sequences")
+        .update({
+          name: rest.name,
+          description: rest.description || null,
+          organization_email_id: rest.organization_email_id || null,
+        })
+        .eq("id", id);
       if (error) throw error;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["sequences"] });
       setIsOpen(false);
       setEditingSequence(null);
-      setFormData({ name: "", description: "" });
+      setFormData({ name: "", description: "", organization_email_id: "" });
       toast({ title: "Sequence updated successfully" });
     },
     onError: (error) => {
@@ -136,6 +192,23 @@ export default function Sequences() {
     },
   });
 
+  const updateStepMutation = useMutation({
+    mutationFn: async (data: { id: string; template_id: string; delay_days: number; delay_hours: number; trigger_type: string }) => {
+      const { id, ...rest } = data;
+      const { error } = await supabase.from("sequence_steps").update(rest).eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["steps", selectedSequence?.id] });
+      setEditingStep(null);
+      setStepForm({ template_id: "", delay_days: 0, delay_hours: 0, trigger_type: "time_based" });
+      toast({ title: "Step updated successfully" });
+    },
+    onError: (error) => {
+      toast({ title: "Error updating step", description: error.message, variant: "destructive" });
+    },
+  });
+
   const deleteStepMutation = useMutation({
     mutationFn: async (id: string) => {
       const { error } = await supabase.from("sequence_steps").delete().eq("id", id);
@@ -150,9 +223,36 @@ export default function Sequences() {
     },
   });
 
+  const handleEditStep = (step: any) => {
+    setEditingStep(step);
+    setStepForm({
+      template_id: step.template_id,
+      delay_days: step.delay_days,
+      delay_hours: step.delay_hours || 0,
+      trigger_type: step.trigger_type || "time_based",
+    });
+  };
+
+  const handleStepSubmit = () => {
+    if (editingStep) {
+      updateStepMutation.mutate({ id: editingStep.id, ...stepForm });
+    } else {
+      addStepMutation.mutate();
+    }
+  };
+
+  const cancelEditStep = () => {
+    setEditingStep(null);
+    setStepForm({ template_id: "", delay_days: 0, delay_hours: 0, trigger_type: "time_based" });
+  };
+
   const handleEditSequence = (sequence: any) => {
     setEditingSequence(sequence);
-    setFormData({ name: sequence.name, description: sequence.description || "" });
+    setFormData({
+      name: sequence.name,
+      description: sequence.description || "",
+      organization_email_id: sequence.organization_email_id || defaultEmailId,
+    });
     setIsOpen(true);
   };
 
@@ -177,7 +277,10 @@ export default function Sequences() {
             setIsOpen(open);
             if (!open) {
               setEditingSequence(null);
-              setFormData({ name: "", description: "" });
+              setFormData({ name: "", description: "", organization_email_id: "" });
+            } else if (!editingSequence) {
+              // Opening for new sequence — pre-select default email
+              setFormData((f) => ({ ...f, organization_email_id: defaultEmailId }));
             }
           }}
         >
@@ -208,6 +311,31 @@ export default function Sequences() {
                   placeholder="Describe this sequence..."
                   rows={3}
                 />
+              </div>
+              <div>
+                <label className="text-sm font-medium">From Email</label>
+                {orgEmails && orgEmails.length > 0 ? (
+                  <Select
+                    value={formData.organization_email_id}
+                    onValueChange={(value) => setFormData({ ...formData, organization_email_id: value })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select a sending email" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {orgEmails.map((e) => (
+                        <SelectItem key={e.id} value={e.id}>
+                          {e.display_name ? `${e.display_name} <${e.email}>` : e.email}
+                          {e.is_default ? " (default)" : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <p className="text-sm text-muted-foreground mt-1">
+                    No verified emails available. Add a domain and email in Organization settings first.
+                  </p>
+                )}
               </div>
               <div className="flex justify-end gap-2">
                 <Button variant="outline" onClick={() => setIsOpen(false)}>
@@ -263,6 +391,14 @@ export default function Sequences() {
                         <h3 className="font-medium">{sequence.name}</h3>
                         {sequence.description && (
                           <p className="text-sm text-muted-foreground">{sequence.description}</p>
+                        )}
+                        {sequence.organization_emails && (
+                          <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
+                            <Mail className="h-3 w-3" />
+                            {sequence.organization_emails.display_name
+                              ? `${sequence.organization_emails.display_name} <${sequence.organization_emails.email}>`
+                              : sequence.organization_emails.email}
+                          </p>
                         )}
                       </div>
                       <div className="flex gap-1">
@@ -324,7 +460,7 @@ export default function Sequences() {
                         </div>
                       </div>
                     )}
-                    <div className="flex items-center justify-between p-3 bg-muted rounded-lg">
+                    <div className={`flex items-center justify-between p-3 rounded-lg ${editingStep?.id === step.id ? "bg-primary/10 ring-1 ring-primary" : "bg-muted"}`}>
                       <div>
                         <div className="flex items-center gap-2">
                           <Badge variant="outline">Step {index + 1}</Badge>
@@ -332,21 +468,39 @@ export default function Sequences() {
                         </div>
                         <p className="text-sm text-muted-foreground mt-1">{step.email_templates?.subject}</p>
                       </div>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setDeleteConfirmStepId(step.id)}
-                        className="text-destructive hover:text-destructive"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
+                      <div className="flex gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleEditStep(step)}
+                        >
+                          <Edit className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setDeleteConfirmStepId(step.id)}
+                          className="text-destructive hover:text-destructive"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 ))}
 
-                {/* Add Step Form */}
+                {/* Add / Edit Step Form */}
                 <div className="border-t pt-4 space-y-3">
-                  <h4 className="text-sm font-medium">Add New Step</h4>
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-medium">
+                      {editingStep ? `Edit Step ${(steps?.findIndex((s) => s.id === editingStep.id) ?? 0) + 1}` : "Add New Step"}
+                    </h4>
+                    {editingStep && (
+                      <Button variant="ghost" size="sm" onClick={cancelEditStep}>
+                        Cancel
+                      </Button>
+                    )}
+                  </div>
                   <div>
                     <label className="text-xs text-muted-foreground">Template</label>
                     <Select
@@ -386,28 +540,22 @@ export default function Sequences() {
                       />
                     </div>
                   </div>
-                  <div>
-                    <label className="text-xs text-muted-foreground">Trigger Type</label>
-                    <Select
-                      value={stepForm.trigger_type}
-                      onValueChange={(value) => setStepForm({ ...stepForm, trigger_type: value })}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="time_based">Time-based (automatic)</SelectItem>
-                        <SelectItem value="manual">Manual trigger</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
                   <Button
-                    onClick={() => addStepMutation.mutate()}
+                    onClick={handleStepSubmit}
                     disabled={!stepForm.template_id}
                     className="w-full"
                   >
-                    <Plus className="mr-2 h-4 w-4" />
-                    Add Step
+                    {editingStep ? (
+                      <>
+                        <Edit className="mr-2 h-4 w-4" />
+                        Update Step
+                      </>
+                    ) : (
+                      <>
+                        <Plus className="mr-2 h-4 w-4" />
+                        Add Step
+                      </>
+                    )}
                   </Button>
                 </div>
               </CardContent>

@@ -1,5 +1,8 @@
-import { Mail, GitBranch, UserPlus, BarChart3, LineChart, Settings } from "lucide-react";
+import { Mail, GitBranch, UserPlus, BarChart3, LineChart, Settings, LogOut, Building, ShieldCheck } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
+import { useAuth } from "@/contexts/AuthContext";
+import { useQuery } from "@tanstack/react-query";
+import { supabase } from "@/integrations/supabase/client";
 import {
   Sidebar,
   SidebarContent,
@@ -10,9 +13,16 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarHeader,
-  SidebarTrigger,
+  SidebarFooter,
   useSidebar,
 } from "@/components/ui/sidebar";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 const navItems = [
   { title: "Templates", url: "/templates", icon: Mail },
@@ -22,13 +32,51 @@ const navItems = [
   { title: "Insights", url: "/insights", icon: LineChart },
 ];
 
-const bottomNavItems = [
-  { title: "Settings", url: "/settings", icon: Settings },
-];
-
 export function AppSidebar() {
   const { state } = useSidebar();
+  const { user, profile, signOut } = useAuth();
   const isCollapsed = state === "collapsed";
+
+  // Check if user is an admin of their organization
+  const { data: membership } = useQuery({
+    queryKey: ["my-membership", user?.id],
+    queryFn: async () => {
+      if (!user?.id) return null;
+      const { data, error } = await supabase
+        .from("organization_members")
+        .select("role, organizations(name)")
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (error) return null;
+      return data;
+    },
+    enabled: !!user?.id,
+  });
+
+  // Check if user is a super admin
+  const { data: isSuperAdmin } = useQuery({
+    queryKey: ["is-super-admin", user?.id],
+    queryFn: async () => {
+      if (!user?.id) return false;
+      const { data } = await supabase
+        .from("users")
+        .select("is_super_admin")
+        .eq("id", user.id)
+        .single();
+      return data?.is_super_admin === true;
+    },
+    enabled: !!user?.id,
+    
+  });
+
+  console.log("isSuperAdmin value:", isSuperAdmin);
+
+  const isAdmin = membership?.role === "admin";
+  const orgName = membership?.organizations?.name;
+
+  const displayName = profile?.name || profile?.first_name || user?.email?.split("@")[0] || "User";
+  const displayEmail = user?.email || "";
+  const initials = displayName.charAt(0).toUpperCase();
 
   return (
     <Sidebar collapsible="icon">
@@ -38,7 +86,7 @@ export function AppSidebar() {
             <Mail className="h-4 w-4 text-primary-foreground" />
           </div>
           {!isCollapsed && (
-            <span className="font-semibold text-lg">Mailzen</span>
+            <span className="font-semibold text-lg">Mora</span>
           )}
         </div>
       </SidebarHeader>
@@ -64,27 +112,108 @@ export function AppSidebar() {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
-        <SidebarGroup className="mt-auto">
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {bottomNavItems.map((item) => (
-                <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton asChild tooltip={item.title}>
+
+        {/* Organization section - visible to org admins */}
+        {isAdmin && (
+          <SidebarGroup>
+            <SidebarGroupLabel>Admin</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                <SidebarMenuItem>
+                  <SidebarMenuButton asChild tooltip="Organization">
                     <NavLink
-                      to={item.url}
+                      to="/organization"
                       className="flex items-center gap-2"
                       activeClassName="bg-sidebar-accent text-sidebar-accent-foreground"
                     >
-                      <item.icon className="h-4 w-4" />
-                      <span>{item.title}</span>
+                      <Building className="h-4 w-4" />
+                      <span>Organization</span>
                     </NavLink>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
+
+        {/* Super Admin section - visible only to super admins */}
+        {isSuperAdmin && (
+          <SidebarGroup>
+            <SidebarGroupLabel>Super Admin</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                <SidebarMenuItem>
+                  <SidebarMenuButton asChild tooltip="Super Admin">
+                    <NavLink
+                      to="/super-admin"
+                      className="flex items-center gap-2"
+                      activeClassName="bg-sidebar-accent text-sidebar-accent-foreground"
+                    >
+                      <ShieldCheck className="h-4 w-4" />
+                      <span>Super Admin</span>
+                    </NavLink>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
+        
       </SidebarContent>
+      
+      <SidebarFooter className="border-t border-sidebar-border">
+        <SidebarMenu>
+          {/* Account dropdown */}
+          <SidebarMenuItem>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <SidebarMenuButton tooltip={displayEmail} className="cursor-pointer">
+                  <div className="w-6 h-6 bg-primary/20 text-primary rounded-full flex items-center justify-center text-sm font-medium">
+                    {initials}
+                  </div>
+                  {!isCollapsed && (
+                    <div className="flex flex-col items-start overflow-hidden">
+                      <span className="text-sm font-medium truncate">{displayName}</span>
+                      <span className="text-xs text-muted-foreground truncate">
+                        {orgName || displayEmail}
+                      </span>
+                    </div>
+                  )}
+                </SidebarMenuButton>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent side="top" align="start" className="w-56">
+                <div className="px-2 py-1.5">
+                  <p className="text-sm font-medium">{displayName}</p>
+                  <p className="text-xs text-muted-foreground">{displayEmail}</p>
+                  {orgName && (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {orgName} • {membership?.role === "admin" ? "Admin" : "Member"}
+                    </p>
+                  )}
+                  {isSuperAdmin && (
+                    <p className="text-xs text-primary mt-1 flex items-center gap-1">
+                      <ShieldCheck className="h-3 w-3" />
+                      Super Admin
+                    </p>
+                  )}
+                </div>
+                <DropdownMenuSeparator />
+                {/* <DropdownMenuItem asChild>
+                  <NavLink to="/settings" className="flex items-center gap-2 cursor-pointer">
+                    <Settings className="h-4 w-4" />
+                    <span>Settings</span>
+                  </NavLink>
+                </DropdownMenuItem> */}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={signOut} className="text-destructive cursor-pointer">
+                  <LogOut className="h-4 w-4 mr-2" />
+                  <span>Logout</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </SidebarMenuItem>
+        </SidebarMenu>
+      </SidebarFooter>
     </Sidebar>
   );
 }

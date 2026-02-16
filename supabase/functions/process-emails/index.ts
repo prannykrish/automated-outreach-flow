@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { serve } from "https://deno.land/std@0.208.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -11,11 +12,19 @@ const corsHeaders = {
 
 function replacePlaceholders(content: string, customer: any): string {
   if (!content) return "";
-  return content
+  let result = content
     .replace(/\[First Name\]/g, customer.first_name || "")
     .replace(/\[Last Name\]/g, customer.last_name || "")
-    .replace(/\[Firm Name\]/g, customer.firm_name || "")
-    .replace(/\[Custom Field\]/g, customer.custom_field || "");
+    .replace(/\[Full Name\]/g,
+      [customer.first_name, customer.last_name].filter(Boolean).join(" ") || "")
+    .replace(/\[Firm Name\]/g, customer.firm_name || "");
+
+  // Replace custom placeholders from customer.custom_fields JSONB
+  const customFields = customer.custom_fields || {};
+  result = result.replace(/\[([^\]]+)\]/g, (match: string, key: string) => {
+    return customFields[key] !== undefined ? customFields[key] : match;
+  });
+  return result;
 }
 
 serve(async (req: Request) => {
@@ -26,7 +35,6 @@ serve(async (req: Request) => {
   }
 
   try {
-    // Read env vars INSIDE the handler
     const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY");
     const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
     const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -53,7 +61,11 @@ serve(async (req: Request) => {
         customers(*),
         sequence_steps(
           *,
-          email_templates(*)
+          email_templates(*),
+          email_sequences(
+            organization_email_id,
+            organization_emails(email, display_name, reply_to)
+          )
         )
       `)
       .lte("scheduled_for", now)
@@ -119,7 +131,31 @@ serve(async (req: Request) => {
       }
 
       try {
-        console.log("Sending to:", customer.email, "Subject:", emailSubject);
+        // Resolve the "from" address and reply-to from the sequence's organization email
+        let fromAddress = Deno.env.get("DEFAULT_FROM_EMAIL") || "noreply@example.com";
+        let replyTo: string | undefined;
+        const orgEmail = step?.email_sequences?.organization_emails;
+        if (orgEmail) {
+          fromAddress = orgEmail.display_name
+            ? `${orgEmail.display_name} <${orgEmail.email}>`
+            : orgEmail.email;
+          if (orgEmail.reply_to) {
+            replyTo = orgEmail.reply_to;
+          }
+        }
+
+        console.log("Sending to:", customer.email, "From:", fromAddress, "Subject:", emailSubject, "ReplyTo:", replyTo || "none");
+
+        const emailPayload: Record<string, any> = {
+          from: fromAddress,
+          to: customer.email,
+          subject: emailSubject,
+          html: body.replace(/\n/g, "<br>"),
+          text: body,
+        };
+        if (replyTo) {
+          emailPayload.reply_to = replyTo;
+        }
 
         const resendResponse = await fetch("https://api.resend.com/emails", {
           method: "POST",
@@ -127,13 +163,7 @@ serve(async (req: Request) => {
             "Content-Type": "application/json",
             Authorization: `Bearer ${RESEND_API_KEY}`,
           },
-          body: JSON.stringify({
-            from: "Pranav <pranav@novationapp.com>",
-            to: customer.email,
-            subject: emailSubject,
-            html: body.replace(/\n/g, "<br>"),
-            text: body,
-          }),
+          body: JSON.stringify(emailPayload),
         });
 
         const resendData = await resendResponse.json();
@@ -144,7 +174,17 @@ serve(async (req: Request) => {
         }
 
         await supabase.from("scheduled_sends").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", scheduled.id);
-        await supabase.from("email_logs").insert({ customer_id: customer.id, template_id: template.id, status: "sent", sent_at: new Date().toISOString(), resend_id: resendData.id });
+        await supabase.from("email_logs").insert({
+          customer_id: customer.id,
+          customer_email: customer.email,
+          customer_name: [customer.first_name, customer.last_name].filter(Boolean).join(" "),
+          template_id: template.id,
+          status: "sent",
+          sent_at: new Date().toISOString(),
+          resend_id: resendData.id,
+          user_id: customer.user_id || null,
+          organization_id: customer.organization_id || null,
+        });
 
         if (step.step_order === 0) {
           await supabase.from("customers").update({ status: "contacted" }).eq("id", customer.id);
@@ -156,7 +196,14 @@ serve(async (req: Request) => {
           const nextDate = new Date();
           nextDate.setDate(nextDate.getDate() + (nextStep.delay_days || 0));
           nextDate.setHours(nextDate.getHours() + (nextStep.delay_hours || 0));
-          await supabase.from("scheduled_sends").insert({ customer_id: customer.id, step_id: nextStep.id, scheduled_for: nextDate.toISOString(), status: "pending" });
+          await supabase.from("scheduled_sends").insert({
+            customer_id: customer.id,
+            step_id: nextStep.id,
+            scheduled_for: nextDate.toISOString(),
+            status: "pending",
+            user_id: customer.user_id || null,
+            organization_id: customer.organization_id || null,
+          });
           await supabase.from("customers").update({ current_step_id: nextStep.id }).eq("id", customer.id);
         }
 
@@ -165,7 +212,16 @@ serve(async (req: Request) => {
       } catch (err: any) {
         console.error("Send failed:", err.message);
         await supabase.from("scheduled_sends").update({ status: "failed" }).eq("id", scheduled.id);
-        await supabase.from("email_logs").insert({ customer_id: customer.id, template_id: template.id, status: "failed", error_message: err.message });
+        await supabase.from("email_logs").insert({
+          customer_id: customer.id,
+          customer_email: customer.email,
+          customer_name: [customer.first_name, customer.last_name].filter(Boolean).join(" "),
+          template_id: template.id,
+          status: "failed",
+          error_message: err.message,
+          user_id: customer.user_id || null,
+          organization_id: customer.organization_id || null,
+        });
         results.push({ email: customer.email, status: "failed", error: err.message });
       }
     }

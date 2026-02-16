@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -17,7 +18,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Search, Filter, Pause, Play, SkipForward, Mail, Clock, Building, Trash2, Eye, MessageSquare, Send, Calendar, CheckCircle, XCircle } from "lucide-react";
+import { Search, Filter, Pause, Play, SkipForward, Mail, Clock, Building, Trash2, Eye, MessageSquare, Send, Calendar, CheckCircle, XCircle, ChevronLeft, ChevronRight } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { format, formatDistanceToNow } from "date-fns";
 
@@ -35,13 +36,17 @@ export default function Pipeline() {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 10;
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
+  const { user, organizationId } = useAuth();
+
   const { data: customers, isLoading } = useQuery({
-    queryKey: ["customers"],
+    queryKey: ["customers", organizationId ?? "none"],
     queryFn: async () => {
-      const { data, error } = await supabase
+      let query: any = supabase
         .from("customers")
         .select(`
           *,
@@ -49,9 +54,16 @@ export default function Pipeline() {
           sequence_steps(step_order, email_templates(name))
         `)
         .order("created_at", { ascending: false });
+
+      if (organizationId) {
+        query = query.eq("organization_id", organizationId);
+      }
+
+      const { data, error } = await query;
       if (error) throw error;
       return data as any;
     },
+    enabled: !!organizationId,
   });
 
   // Get email logs for selected customer (sent emails)
@@ -160,9 +172,7 @@ export default function Pipeline() {
     mutationFn: async (id: string) => {
       // Delete scheduled sends first (foreign key constraint)
       await supabase.from("scheduled_sends").delete().eq("customer_id", id);
-      // Delete email logs
-      await supabase.from("email_logs").delete().eq("customer_id", id);
-      // Delete customer
+      // Email logs are preserved for historic stats (customer_id set to NULL via FK ON DELETE SET NULL)
       const { error } = await supabase.from("customers").delete().eq("id", id);
       if (error) throw error;
     },
@@ -262,7 +272,25 @@ export default function Pipeline() {
       customer.email.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesStatus = statusFilter === "all" || customer.status === statusFilter;
     return matchesSearch && matchesStatus;
-  });
+  }) || [];
+
+  // Calculate pagination values
+  const totalItems = filteredCustomers.length;
+  const totalPages = Math.ceil(totalItems / itemsPerPage);
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const endIndex = startIndex + itemsPerPage;
+  const paginatedCustomers = filteredCustomers.slice(startIndex, endIndex);
+
+  // Reset to page 1 when search or filter changes
+  const handleSearchChange = (value: string) => {
+    setSearchQuery(value);
+    setCurrentPage(1);
+  };
+
+  const handleStatusFilterChange = (value: string) => {
+    setStatusFilter(value);
+    setCurrentPage(1);
+  };
 
   const getStatusBadge = (status: string) => {
     const statusInfo = STATUSES.find((s) => s.value === status);
@@ -336,11 +364,11 @@ export default function Pipeline() {
           <Input
             placeholder="Search customers..."
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(e) => handleSearchChange(e.target.value)}
             className="pl-10"
           />
         </div>
-        <Select value={statusFilter} onValueChange={setStatusFilter}>
+        <Select value={statusFilter} onValueChange={handleStatusFilterChange}>
           <SelectTrigger className="w-48">
             <Filter className="mr-2 h-4 w-4" />
             <SelectValue placeholder="Filter by status" />
@@ -377,14 +405,14 @@ export default function Pipeline() {
                     Loading...
                   </TableCell>
                 </TableRow>
-              ) : filteredCustomers?.length === 0 ? (
+              ) : paginatedCustomers.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
                     No customers found
                   </TableCell>
                 </TableRow>
               ) : (
-                filteredCustomers?.map((customer) => (
+                paginatedCustomers.map((customer) => (
                   <TableRow
                     key={customer.id}
                     className="cursor-pointer hover:bg-accent"
@@ -430,6 +458,48 @@ export default function Pipeline() {
           </Table>
         </CardContent>
       </Card>
+
+      {/* Pagination Controls */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between">
+          <div className="text-sm text-muted-foreground">
+            Showing {startIndex + 1} to {Math.min(endIndex, totalItems)} of {totalItems} customers
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+              disabled={currentPage === 1}
+            >
+              <ChevronLeft className="h-4 w-4 mr-1" />
+              Previous
+            </Button>
+            <div className="flex items-center gap-1">
+              {Array.from({ length: totalPages }).map((_, i) => (
+                <Button
+                  key={i + 1}
+                  variant={currentPage === i + 1 ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setCurrentPage(i + 1)}
+                  className="w-10"
+                >
+                  {i + 1}
+                </Button>
+              ))}
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
+              disabled={currentPage === totalPages}
+            >
+              Next
+              <ChevronRight className="h-4 w-4 ml-1" />
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Customer Detail Dialog */}
       <Dialog open={!!selectedCustomer} onOpenChange={() => setSelectedCustomer(null)}>

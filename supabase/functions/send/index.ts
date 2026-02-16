@@ -1,4 +1,7 @@
+// @ts-nocheck
+
 import { serve } from "https://deno.land/std@0.208.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 declare const Deno: any;
 
@@ -7,6 +10,7 @@ const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY");
 interface SendEmailRequest {
   to: string | string[];
   from?: string;
+  organization_email_id?: string; // Look up from address by org email ID
   subject?: string; // Now optional for follow-up emails
   html?: string;
   text?: string;
@@ -17,7 +21,7 @@ interface SendEmailRequest {
   references?: string; // For threading
 }
 
-const defaultFromEmail = "noreply@automated-outreach.com";
+const defaultFromEmail = Deno.env.get("DEFAULT_FROM_EMAIL") || "noreply@example.com";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -71,9 +75,29 @@ serve(async (req: Request) => {
       );
     }
 
+    // Resolve the "from" address
+    let fromAddress = payload.from || defaultFromEmail;
+    if (payload.organization_email_id && !payload.from) {
+      const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
+      const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+      if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
+        const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+        const { data: orgEmail } = await supabase
+          .from("organization_emails")
+          .select("email, display_name")
+          .eq("id", payload.organization_email_id)
+          .single();
+        if (orgEmail) {
+          fromAddress = orgEmail.display_name
+            ? `${orgEmail.display_name} <${orgEmail.email}>`
+            : orgEmail.email;
+        }
+      }
+    }
+
     // Build the email payload
     const emailPayload: Record<string, any> = {
-      from: payload.from || defaultFromEmail,
+      from: fromAddress,
       to: payload.to,
       html: payload.html,
       text: payload.text,

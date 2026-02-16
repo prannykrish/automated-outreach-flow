@@ -1,0 +1,149 @@
+import React, { createContext, useContext, useEffect, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
+
+type AuthContextValue = {
+  user: any | null;
+  session: any | null;
+  profile: any | null;
+  organizationId: string | null;
+  loading: boolean;
+  signIn: (email: string, password: string) => Promise<any>;
+  signUp: (email: string, password: string, opts?: { first_name?: string; last_name?: string; name?: string }) => Promise<any>;
+  signOut: () => Promise<void>;
+};
+
+const AuthContext = createContext<AuthContextValue | undefined>(undefined);
+
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [user, setUser] = useState<any | null>(null);
+  const [session, setSession] = useState<any | null>(null);
+  const [profile, setProfile] = useState<any | null>(null);
+  const [organizationId, setOrganizationId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const fetchProfile = async (userId: string) => {
+    try {
+      const { data } = await supabase
+        .from("users")
+        .select("*")
+        .eq("id", userId)
+        .maybeSingle();
+      setProfile(data ?? null);
+    } catch (err) {
+      console.error("Error fetching profile:", err);
+      setProfile(null);
+    }
+  };
+
+  const fetchOrganization = async (userId: string) => {
+    try {
+      const { data } = await supabase
+        .from("organization_members")
+        .select("organization_id")
+        .eq("user_id", userId)
+        .maybeSingle();
+      setOrganizationId(data?.organization_id ?? null);
+    } catch (err) {
+      console.error("Error fetching organization:", err);
+      setOrganizationId(null);
+    }
+  };
+
+  useEffect(() => {
+    let mounted = true;
+
+    // Listen for auth changes FIRST
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, sess) => {
+        console.log("Auth event:", event);
+        
+        if (!mounted) return;
+
+        setSession(sess);
+        setUser(sess?.user ?? null);
+
+        if (sess?.user?.id) {
+          // Use setTimeout to avoid Supabase deadlock
+          setTimeout(() => {
+            if (mounted) {
+              fetchProfile(sess.user.id);
+              fetchOrganization(sess.user.id);
+            }
+          }, 0);
+        } else {
+          setProfile(null);
+          setOrganizationId(null);
+        }
+
+        setLoading(false);
+      }
+    );
+
+    // Then check current session
+    supabase.auth.getSession().then(({ data: { session: sess } }) => {
+      if (!mounted) return;
+      
+      setSession(sess);
+      setUser(sess?.user ?? null);
+      
+      if (sess?.user?.id) {
+        fetchProfile(sess.user.id);
+        fetchOrganization(sess.user.id);
+      }
+      
+      setLoading(false);
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  const signIn = async (email: string, password: string) => {
+    return supabase.auth.signInWithPassword({ email, password });
+  };
+
+  const signUp = async (
+    email: string,
+    password: string,
+    opts?: { first_name?: string; last_name?: string; name?: string }
+  ) => {
+    const result = await supabase.auth.signUp({ email, password });
+
+    const userId = result.data?.user?.id;
+    if (userId) {
+      await supabase.from("users").upsert({
+        id: userId,
+        email,
+        first_name: opts?.first_name ?? null,
+        last_name: opts?.last_name ?? null,
+        name: opts?.name ?? (`${opts?.first_name ?? ""} ${opts?.last_name ?? ""}`.trim() || null),
+      });
+
+      await fetchProfile(userId);
+    }
+
+    return result;
+  };
+
+  const signOut = async () => {
+    await supabase.auth.signOut();
+    setUser(null);
+    setSession(null);
+    setProfile(null);
+    setOrganizationId(null);
+  };
+
+  return (
+    <AuthContext.Provider value={{ user, session, profile, organizationId, loading, signIn, signUp, signOut }}>
+      {children}
+    </AuthContext.Provider>
+  );
+};
+
+export const useAuth = () => {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error("useAuth must be used within an AuthProvider");
+  return ctx;
+};

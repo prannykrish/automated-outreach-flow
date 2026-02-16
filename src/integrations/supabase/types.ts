@@ -16,46 +16,55 @@ export type Database = {
     Tables: {
       customers: {
         Row: {
-          created_at: string
+          created_at: string | null
           current_step_id: string | null
           email: string
           firm_name: string
           first_name: string
-          last_name: string | null
           id: string
+          last_name: string | null
           notes: string | null
-          paused: boolean
+          organization_id: string | null
+          paused: boolean | null
           sequence_id: string | null
           status: string
-          updated_at: string
+          custom_fields: Json | null
+          updated_at: string | null
+          user_id: string | null
         }
         Insert: {
-          created_at?: string
+          created_at?: string | null
           current_step_id?: string | null
+          custom_fields?: Json | null
           email: string
           firm_name: string
           first_name: string
-          last_name?: string | null
           id?: string
+          last_name?: string | null
           notes?: string | null
-          paused?: boolean
+          organization_id?: string | null
+          paused?: boolean | null
           sequence_id?: string | null
           status?: string
-          updated_at?: string
+          updated_at?: string | null
+          user_id?: string | null
         }
         Update: {
-          created_at?: string
+          created_at?: string | null
           current_step_id?: string | null
+          custom_fields?: Json | null
           email?: string
           firm_name?: string
           first_name?: string
-          last_name?: string | null
           id?: string
+          last_name?: string | null
           notes?: string | null
-          paused?: boolean
+          organization_id?: string | null
+          paused?: boolean | null
           sequence_id?: string | null
           status?: string
-          updated_at?: string
+          updated_at?: string | null
+          user_id?: string | null
         }
         Relationships: [
           {
@@ -63,6 +72,13 @@ export type Database = {
             columns: ["current_step_id"]
             isOneToOne: false
             referencedRelation: "sequence_steps"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "customers_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
             referencedColumns: ["id"]
           },
           {
@@ -76,40 +92,52 @@ export type Database = {
       }
       email_logs: {
         Row: {
-          created_at: string
+          created_at: string | null
           customer_id: string | null
+          customer_email: string | null
+          customer_name: string | null
           error_message: string | null
           id: string
           opened_at: string | null
+          organization_id: string | null
           replied_at: string | null
           resend_id: string | null
           sent_at: string | null
           status: string
           template_id: string | null
+          user_id: string | null
         }
         Insert: {
-          created_at?: string
+          created_at?: string | null
           customer_id?: string | null
+          customer_email?: string | null
+          customer_name?: string | null
           error_message?: string | null
           id?: string
           opened_at?: string | null
+          organization_id?: string | null
           replied_at?: string | null
           resend_id?: string | null
           sent_at?: string | null
-          status?: string
+          status: string
           template_id?: string | null
+          user_id?: string | null
         }
         Update: {
-          created_at?: string
+          created_at?: string | null
           customer_id?: string | null
+          customer_email?: string | null
+          customer_name?: string | null
           error_message?: string | null
           id?: string
           opened_at?: string | null
+          organization_id?: string | null
           replied_at?: string | null
           resend_id?: string | null
           sent_at?: string | null
           status?: string
           template_id?: string | null
+          user_id?: string | null
         }
         Relationships: [
           {
@@ -120,10 +148,10 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
-            foreignKeyName: "email_logs_step_id_fkey"
-            columns: ["step_id"]
+            foreignKeyName: "email_logs_organization_id_fkey"
+            columns: ["organization_id"]
             isOneToOne: false
-            referencedRelation: "sequence_steps"
+            referencedRelation: "organizations"
             referencedColumns: ["id"]
           },
           {
@@ -137,109 +165,281 @@ export type Database = {
       }
       email_sequences: {
         Row: {
-          created_at: string
+          created_at: string | null
           description: string | null
           id: string
           name: string
-          updated_at: string
+          organization_email_id: string | null
+          organization_id: string | null
+          updated_at: string | null
+          user_id: string | null
         }
         Insert: {
-          created_at?: string
+          created_at?: string | null
           description?: string | null
           id?: string
           name: string
-          updated_at?: string
+          organization_email_id?: string | null
+          organization_id?: string | null
+          updated_at?: string | null
+          user_id?: string | null
         }
         Update: {
-          created_at?: string
+          created_at?: string | null
           description?: string | null
           id?: string
           name?: string
-          updated_at?: string
+          organization_email_id?: string | null
+          organization_id?: string | null
+          updated_at?: string | null
+          user_id?: string | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "email_sequences_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "email_sequences_organization_email_id_fkey"
+            columns: ["organization_email_id"]
+            isOneToOne: false
+            referencedRelation: "organization_emails"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       email_templates: {
         Row: {
           body: string
-          created_at: string
+          created_at: string | null
           folder_id: string | null
           id: string
           name: string
+          organization_id: string | null
           stage: string
-          subject: string
-          updated_at: string
+          subject: string | null
+          updated_at: string | null
+          user_id: string | null
         }
         Insert: {
           body: string
-          created_at?: string
+          created_at?: string | null
           folder_id?: string | null
           id?: string
           name: string
+          organization_id?: string | null
           stage?: string
-          subject: string
-          updated_at?: string
+          subject?: string | null
+          updated_at?: string | null
+          user_id?: string | null
         }
         Update: {
           body?: string
-          created_at?: string
+          created_at?: string | null
           folder_id?: string | null
           id?: string
           name?: string
+          organization_id?: string | null
           stage?: string
-          subject?: string
-          updated_at?: string
+          subject?: string | null
+          updated_at?: string | null
+          user_id?: string | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "email_templates_folder_id_fkey"
+            columns: ["folder_id"]
+            isOneToOne: false
+            referencedRelation: "template_folders"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "email_templates_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
       }
-      template_folders: {
+      organization_domains: {
         Row: {
-          created_at: string
+          created_at: string | null
+          dns_records: Json | null
+          domain: string
           id: string
-          name: string
-          updated_at: string
+          organization_id: string
+          resend_domain_id: string | null
+          status: string
+          verified: boolean | null
+          verified_at: string | null
         }
         Insert: {
-          created_at?: string
+          created_at?: string | null
+          dns_records?: Json | null
+          domain: string
           id?: string
-          name: string
-          updated_at?: string
+          organization_id: string
+          resend_domain_id?: string | null
+          status?: string
+          verified?: boolean | null
+          verified_at?: string | null
         }
         Update: {
-          created_at?: string
+          created_at?: string | null
+          dns_records?: Json | null
+          domain?: string
+          id?: string
+          organization_id?: string
+          resend_domain_id?: string | null
+          status?: string
+          verified?: boolean | null
+          verified_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "organization_domains_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      organization_emails: {
+        Row: {
+          created_at: string | null
+          display_name: string | null
+          email: string
+          id: string
+          is_default: boolean | null
+          organization_id: string
+          reply_to: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          display_name?: string | null
+          email: string
+          id?: string
+          is_default?: boolean | null
+          organization_id: string
+          reply_to?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          display_name?: string | null
+          email?: string
+          id?: string
+          is_default?: boolean | null
+          organization_id?: string
+          reply_to?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "organization_emails_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      organization_members: {
+        Row: {
+          created_at: string | null
+          id: string
+          organization_id: string
+          role: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string | null
+          id?: string
+          organization_id: string
+          role?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string | null
+          id?: string
+          organization_id?: string
+          role?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "organization_members_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "organization_members_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      organizations: {
+        Row: {
+          created_at: string | null
+          id: string
+          name: string
+          updated_at: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          id?: string
+          name: string
+          updated_at?: string | null
+        }
+        Update: {
+          created_at?: string | null
           id?: string
           name?: string
-          updated_at?: string
+          updated_at?: string | null
         }
         Relationships: []
       }
       scheduled_sends: {
         Row: {
-          created_at: string
-          customer_id: string
+          created_at: string | null
+          customer_id: string | null
           id: string
+          organization_id: string | null
           scheduled_for: string
-          status: string
           sent_at: string | null
-          step_id: string
+          status: string | null
+          step_id: string | null
+          user_id: string | null
         }
         Insert: {
-          created_at?: string
-          customer_id: string
+          created_at?: string | null
+          customer_id?: string | null
           id?: string
+          organization_id?: string | null
           scheduled_for: string
-          status?: string
           sent_at?: string | null
-          step_id: string
+          status?: string | null
+          step_id?: string | null
+          user_id?: string | null
         }
         Update: {
-          created_at?: string
-          customer_id?: string
+          created_at?: string | null
+          customer_id?: string | null
           id?: string
+          organization_id?: string | null
           scheduled_for?: string
-          status?: string
           sent_at?: string | null
-          step_id?: string
+          status?: string | null
+          step_id?: string | null
+          user_id?: string | null
         }
         Relationships: [
           {
@@ -247,6 +447,13 @@ export type Database = {
             columns: ["customer_id"]
             isOneToOne: false
             referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "scheduled_sends_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
             referencedColumns: ["id"]
           },
           {
@@ -260,37 +467,37 @@ export type Database = {
       }
       sequence_steps: {
         Row: {
-          created_at: string
+          created_at: string | null
           delay_days: number
-          delay_hours: number
+          delay_hours: number | null
           id: string
           parent_step_id: string | null
-          sequence_id: string
+          sequence_id: string | null
           step_order: number
-          template_id: string
-          trigger_type: string
+          template_id: string | null
+          trigger_type: string | null
         }
         Insert: {
-          created_at?: string
+          created_at?: string | null
           delay_days?: number
-          delay_hours?: number
+          delay_hours?: number | null
           id?: string
           parent_step_id?: string | null
-          sequence_id: string
+          sequence_id?: string | null
           step_order?: number
-          template_id: string
-          trigger_type?: string
+          template_id?: string | null
+          trigger_type?: string | null
         }
         Update: {
-          created_at?: string
+          created_at?: string | null
           delay_days?: number
-          delay_hours?: number
+          delay_hours?: number | null
           id?: string
           parent_step_id?: string | null
-          sequence_id?: string
+          sequence_id?: string | null
           step_order?: number
-          template_id?: string
-          trigger_type?: string
+          template_id?: string | null
+          trigger_type?: string | null
         }
         Relationships: [
           {
@@ -315,6 +522,109 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      template_folders: {
+        Row: {
+          created_at: string | null
+          id: string
+          name: string
+          organization_id: string | null
+          user_id: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          id?: string
+          name: string
+          organization_id?: string | null
+          user_id?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          id?: string
+          name?: string
+          organization_id?: string | null
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "template_folders_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      custom_placeholders: {
+        Row: {
+          created_at: string | null
+          description: string | null
+          id: string
+          name: string
+          organization_id: string | null
+          user_id: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          description?: string | null
+          id?: string
+          name: string
+          organization_id?: string | null
+          user_id?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          description?: string | null
+          id?: string
+          name?: string
+          organization_id?: string | null
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "custom_placeholders_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      users: {
+        Row: {
+          avatar_url: string | null
+          created_at: string | null
+          email: string
+          first_name: string | null
+          id: string
+          is_super_admin: boolean | null
+          last_name: string | null
+          name: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          avatar_url?: string | null
+          created_at?: string | null
+          email: string
+          first_name?: string | null
+          id: string
+          is_super_admin?: boolean | null
+          last_name?: string | null
+          name?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          avatar_url?: string | null
+          created_at?: string | null
+          email?: string
+          first_name?: string | null
+          id?: string
+          is_super_admin?: boolean | null
+          last_name?: string | null
+          name?: string | null
+          updated_at?: string | null
+        }
+        Relationships: []
       }
     }
     Views: {
