@@ -38,13 +38,10 @@ CREATE POLICY "Users can view own requests"
   ON public.join_requests FOR SELECT
   USING (auth.uid() = user_id);
 
--- Users can insert their own requests (max 3 pending)
+-- Users can insert their own requests
 CREATE POLICY "Users can create own requests"
   ON public.join_requests FOR INSERT
-  WITH CHECK (
-    auth.uid() = user_id
-    AND (SELECT count(*) FROM public.join_requests jr WHERE jr.user_id = auth.uid() AND jr.status = 'pending') < 3
-  );
+  WITH CHECK (auth.uid() = user_id);
 
 -- Org admins can view requests for their org
 CREATE POLICY "Admins can view org requests"

@@ -137,39 +137,6 @@ export default function Onboarding() {
         });
       if (reqError) throw reqError;
 
-      // Send email notification to admin(s)
-      try {
-        const { data: admins } = await supabase
-          .from("organization_members")
-          .select("users(email, first_name)")
-          .eq("organization_id", foundOrg.id)
-          .eq("role", "admin");
-
-        const userName = user.email || "A user";
-        const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-        const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-
-        for (const admin of admins || []) {
-          const adminEmail = (admin as any).users?.email;
-          if (!adminEmail) continue;
-          await fetch(`${supabaseUrl}/functions/v1/send`, {
-            method: "POST",
-            headers: {
-              "Authorization": `Bearer ${supabaseKey}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              to: adminEmail,
-              subject: `New join request for ${foundOrg.name}`,
-              html: `<p>${userName} has requested to join <strong>${foundOrg.name}</strong> on Mora.</p><p>Log in to your Organization settings to review the request.</p>`,
-              text: `${userName} has requested to join ${foundOrg.name} on Mora. Log in to your Organization settings to review the request.`,
-            }),
-          });
-        }
-      } catch {
-        // Email notification is best-effort
-      }
-
       await refetchOrganization();
       setPendingOrgName(foundOrg.name);
       setStep("pending");

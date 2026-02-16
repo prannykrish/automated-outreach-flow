@@ -456,17 +456,22 @@ export default function Organization() {
     },
   });
 
-  // Helper to send notification email
+  // Helper to send notification email using org's default sending email
   const sendNotificationEmail = async (to: string, subject: string, html: string) => {
     const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
     const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+    // Use org's default email as from address
+    const defaultEmail = emails?.find((e: any) => e.is_default);
+    const fromEmail = defaultEmail
+      ? (defaultEmail.display_name ? `${defaultEmail.display_name} <${defaultEmail.email}>` : defaultEmail.email)
+      : emails?.[0]?.email || undefined;
     await fetch(`${supabaseUrl}/functions/v1/send`, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${supabaseKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ to, subject, html, text: html.replace(/<[^>]+>/g, "") }),
+      body: JSON.stringify({ to, from: fromEmail, subject, html, text: html.replace(/<[^>]+>/g, "") }),
     });
   };
 
@@ -494,10 +499,11 @@ export default function Organization() {
       const email = request.users?.email;
       if (email) {
         try {
+          const appUrl = window.location.origin;
           await sendNotificationEmail(
             email,
             `You've been approved to join ${organization?.name}`,
-            `<p>Your request to join <strong>${organization?.name}</strong> on Mora has been approved!</p><p>Log in to get started.</p>`
+            `<p>Your request to join <strong>${organization?.name}</strong> on Mora has been approved!</p><p><a href="${appUrl}/auth">Log in here</a> to get started.</p>`
           );
         } catch {}
       }
