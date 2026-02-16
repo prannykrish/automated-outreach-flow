@@ -621,66 +621,6 @@ export default function Organization() {
         <p className="text-muted-foreground">Manage {organization.name}</p>
       </div>
 
-      {/* Pending Join Requests */}
-      {joinRequests && joinRequests.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <UserPlus className="h-5 w-5" />
-              Pending Requests
-              <Badge variant="outline" className="ml-1">{joinRequests.length}</Badge>
-            </CardTitle>
-            <CardDescription>People requesting to join your organization</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>User</TableHead>
-                  <TableHead>Requested</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {joinRequests.map((req: any) => (
-                  <TableRow key={req.id}>
-                    <TableCell>
-                      <div>
-                        <p className="font-medium">{req.users?.name || req.users?.first_name || "Unknown"}</p>
-                        <p className="text-sm text-muted-foreground">{req.users?.email}</p>
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {format(new Date(req.created_at), "MMM d, yyyy")}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        <Button
-                          size="sm"
-                          onClick={() => approveRequestMutation.mutate(req)}
-                          disabled={approveRequestMutation.isPending || rejectRequestMutation.isPending}
-                        >
-                          <CheckCircle className="h-4 w-4 mr-1" />
-                          Approve
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => rejectRequestMutation.mutate(req)}
-                          disabled={approveRequestMutation.isPending || rejectRequestMutation.isPending}
-                        >
-                          <X className="h-4 w-4 text-destructive" />
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
-      )}
-
       {/* Members Section */}
       <Card>
         <CardHeader>
@@ -826,6 +766,61 @@ export default function Organization() {
               ))}
             </TableBody>
           </Table>
+
+          {/* Pending Requests Sub-section */}
+          {joinRequests && joinRequests.length > 0 && (
+            <div className="mt-6 pt-6 border-t">
+              <div className="flex items-center gap-2 mb-3">
+                <UserPlus className="h-4 w-4 text-muted-foreground" />
+                <h3 className="text-sm font-semibold">Requests</h3>
+                <Badge variant="outline" className="text-xs">{joinRequests.length}</Badge>
+              </div>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>User</TableHead>
+                    <TableHead>Requested</TableHead>
+                    <TableHead className="text-right">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {joinRequests.map((req: any) => (
+                    <TableRow key={req.id}>
+                      <TableCell>
+                        <div>
+                          <p className="font-medium">{req.users?.name || req.users?.first_name || "Unknown"}</p>
+                          <p className="text-sm text-muted-foreground">{req.users?.email}</p>
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {format(new Date(req.created_at), "MMM d, yyyy")}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          <Button
+                            size="sm"
+                            onClick={() => approveRequestMutation.mutate(req)}
+                            disabled={approveRequestMutation.isPending || rejectRequestMutation.isPending}
+                          >
+                            <CheckCircle className="h-4 w-4 mr-1" />
+                            Approve
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => rejectRequestMutation.mutate(req)}
+                            disabled={approveRequestMutation.isPending || rejectRequestMutation.isPending}
+                          >
+                            <X className="h-4 w-4 text-destructive" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
         </CardContent>
       </Card>
 
