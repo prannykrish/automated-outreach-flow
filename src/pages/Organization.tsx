@@ -194,17 +194,14 @@ export default function Organization() {
     enabled: !!organization?.id && !!session,
   });
 
-  // Get pending join requests
+  // Get pending join requests via RPC (bypasses RLS issues)
   const { data: joinRequests } = useQuery({
     queryKey: ["join-requests", organization?.id, !!session],
     queryFn: async () => {
       if (!organization?.id) return [];
-      const { data, error } = await supabase
-        .from("join_requests")
-        .select("*, users(email, first_name, last_name, name)")
-        .eq("organization_id", organization.id)
-        .eq("status", "pending")
-        .order("created_at", { ascending: true });
+      const { data, error } = await supabase.rpc("get_pending_join_requests", {
+        org_id: organization.id,
+      });
       if (error) throw error;
       return data;
     },
@@ -496,7 +493,7 @@ export default function Organization() {
       if (memberError) throw memberError;
 
       // Send approval email
-      const email = request.users?.email;
+      const email = request.user_email;
       if (email) {
         try {
           const appUrl = window.location.origin;
@@ -527,7 +524,7 @@ export default function Organization() {
         .eq("id", request.id);
       if (error) throw error;
 
-      const email = request.users?.email;
+      const email = request.user_email;
       if (email) {
         try {
           await sendNotificationEmail(
@@ -767,14 +764,18 @@ export default function Organization() {
             </TableBody>
           </Table>
 
-          {/* Pending Requests Sub-section */}
-          {joinRequests && joinRequests.length > 0 && (
-            <div className="mt-6 pt-6 border-t">
-              <div className="flex items-center gap-2 mb-3">
-                <UserPlus className="h-4 w-4 text-muted-foreground" />
-                <h3 className="text-sm font-semibold">Requests</h3>
+          {/* Requests Sub-section */}
+          <div className="mt-6 pt-6 border-t">
+            <div className="flex items-center gap-2 mb-3">
+              <UserPlus className="h-4 w-4 text-muted-foreground" />
+              <h3 className="text-sm font-semibold">Requests</h3>
+              {joinRequests && joinRequests.length > 0 && (
                 <Badge variant="outline" className="text-xs">{joinRequests.length}</Badge>
-              </div>
+              )}
+            </div>
+            {!joinRequests || joinRequests.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-4">No pending requests</p>
+            ) : (
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -788,8 +789,8 @@ export default function Organization() {
                     <TableRow key={req.id}>
                       <TableCell>
                         <div>
-                          <p className="font-medium">{req.users?.name || req.users?.first_name || "Unknown"}</p>
-                          <p className="text-sm text-muted-foreground">{req.users?.email}</p>
+                          <p className="font-medium">{req.user_name || req.user_first_name || "Unknown"}</p>
+                          <p className="text-sm text-muted-foreground">{req.user_email}</p>
                         </div>
                       </TableCell>
                       <TableCell className="text-muted-foreground">
@@ -819,8 +820,8 @@ export default function Organization() {
                   ))}
                 </TableBody>
               </Table>
-            </div>
-          )}
+            )}
+          </div>
         </CardContent>
       </Card>
 

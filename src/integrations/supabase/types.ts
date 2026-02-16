@@ -679,7 +679,28 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      lookup_org_by_invite_code: {
+        Args: { code: string }
+        Returns: { id: string; name: string }[]
+      }
+      get_pending_join_requests: {
+        Args: { org_id: string }
+        Returns: {
+          id: string
+          user_id: string
+          organization_id: string
+          status: string
+          created_at: string
+          user_email: string
+          user_name: string
+          user_first_name: string
+          user_last_name: string
+        }[]
+      }
+      regenerate_invite_code: {
+        Args: { org_id: string }
+        Returns: string
+      }
     }
     Enums: {
       [_ in never]: never
