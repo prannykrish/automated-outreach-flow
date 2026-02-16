@@ -1,4 +1,5 @@
-import { Mail, GitBranch, UserPlus, BarChart3, LineChart, Settings, LogOut, Building, ShieldCheck } from "lucide-react";
+import { Mail, GitBranch, UserPlus, BarChart3, LineChart, Settings, LogOut, Building, ShieldCheck, CreditCard } from "lucide-react";
+import Logo from "@/components/Logo";
 import { NavLink } from "@/components/NavLink";
 import { useAuth } from "@/contexts/AuthContext";
 import { useQuery } from "@tanstack/react-query";
@@ -81,15 +82,26 @@ export function AppSidebar() {
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader className="border-b border-sidebar-border">
-        <div className="flex items-center gap-2 px-2 py-2">
-          <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
-            <Mail className="h-4 w-4 text-primary-foreground" />
-          </div>
-          {!isCollapsed && (
-            <span className="font-semibold text-lg">Mora</span>
-          )}
-        </div>
-      </SidebarHeader>
+  <div className="flex items-center gap-2 px-2 py-2">
+    <div className="w-8 h-8 flex items-center justify-center">
+      <img
+        src="/mora-logo-black.png"
+        alt="Mora logo"
+        className="h-6 w-auto block dark:hidden"
+      />
+      <img
+        src="/mora-logo-white.png"
+        alt="Mora logo"
+        className="h-6 w-auto hidden dark:block"
+      />
+    </div>
+
+    {!isCollapsed && (
+      <span className="font-semibold text-lg">Mora</span>
+    )}
+  </div>
+</SidebarHeader>
+
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupLabel>Navigation</SidebarGroupLabel>
@@ -128,6 +140,18 @@ export function AppSidebar() {
                     >
                       <Building className="h-4 w-4" />
                       <span>Organization</span>
+                    </NavLink>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+                <SidebarMenuItem>
+                  <SidebarMenuButton asChild tooltip="Billing">
+                    <NavLink
+                      to="/billing"
+                      className="flex items-center gap-2"
+                      activeClassName="bg-sidebar-accent text-sidebar-accent-foreground"
+                    >
+                      <CreditCard className="h-4 w-4" />
+                      <span>Billing</span>
                     </NavLink>
                   </SidebarMenuButton>
                 </SidebarMenuItem>

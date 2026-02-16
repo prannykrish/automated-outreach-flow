@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, { createContext, useContext, useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 
 type AuthContextValue = {
@@ -23,6 +23,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [organizationId, setOrganizationId] = useState<string | null>(null);
   const [hasPendingRequest, setHasPendingRequest] = useState(false);
   const [loading, setLoading] = useState(true);
+  const userIdRef = useRef<string | null>(null);
 
   const fetchProfile = async (userId: string) => {
     try {
@@ -70,18 +71,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     let mounted = true;
-
-    // Listen for auth changes FIRST
+    // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, sess) => {
-        console.log("Auth event:", event);
-        
         if (!mounted) return;
 
+        // Skip INITIAL_SESSION — handled by getSession below
+        if (event === "INITIAL_SESSION") return;
+
+        // Token refresh or re-auth of the same user (e.g. returning to tab) — update session silently
+        if (event === "TOKEN_REFRESHED" || (event === "SIGNED_IN" && sess?.user?.id === userIdRef.current)) {
+          setSession(sess);
+          return;
+        }
+
+        // Real auth change: different user signed in, or signed out
         setSession(sess);
         setUser(sess?.user ?? null);
+        userIdRef.current = sess?.user?.id ?? null;
 
         if (sess?.user?.id) {
+          setLoading(true);
           // Use setTimeout to avoid Supabase deadlock
           setTimeout(async () => {
             if (mounted) {
@@ -95,17 +105,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         } else {
           setProfile(null);
           setOrganizationId(null);
+          setHasPendingRequest(false);
           setLoading(false);
         }
       }
     );
 
-    // Then check current session
+    // Initial session check — this is the primary load path
     supabase.auth.getSession().then(async ({ data: { session: sess } }) => {
       if (!mounted) return;
 
       setSession(sess);
       setUser(sess?.user ?? null);
+      userIdRef.current = sess?.user?.id ?? null;
 
       if (sess?.user?.id) {
         await Promise.all([
@@ -154,6 +166,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     await supabase.auth.signOut();
     setUser(null);
     setSession(null);
+    userIdRef.current = null;
     setProfile(null);
     setOrganizationId(null);
   };

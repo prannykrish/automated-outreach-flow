@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { Mail, GitBranch, Users, BarChart3, ArrowRight, Zap, Target, Send } from "lucide-react";
+import { Mail, GitBranch, Users, BarChart3, ArrowRight, Zap, Target, Send, CheckCircle } from "lucide-react";
 
 const features = [
   {
@@ -54,6 +54,9 @@ export default function Landing() {
             <span className="text-lg font-semibold">Mora</span>
           </div>
           <div className="flex items-center gap-3">
+            <a href="#pricing">
+              <Button variant="ghost" size="sm">Pricing</Button>
+            </a>
             <Link to="/auth">
               <Button variant="ghost" size="sm">Sign In</Button>
             </Link>
@@ -136,8 +139,71 @@ export default function Landing() {
         </div>
       </section>
 
+      {/* Pricing */}
+      <section id="pricing" className="border-t border-border/50 bg-muted/30">
+        <div className="max-w-5xl mx-auto px-6 py-20 md:py-28">
+          <div className="text-center mb-16">
+            <h2 className="text-3xl font-bold">Simple, transparent pricing</h2>
+            <p className="mt-3 text-muted-foreground max-w-xl mx-auto">
+              Start with a 14-day free trial. No credit card required.
+            </p>
+          </div>
+          <div className="grid gap-6 md:grid-cols-3 max-w-4xl mx-auto">
+            {/* Starter */}
+            <div className="p-6 rounded-xl border border-border/50 bg-card">
+              <h3 className="text-lg font-semibold">Starter</h3>
+              <p className="text-sm text-muted-foreground mt-1">For small teams</p>
+              <p className="text-3xl font-bold mt-4">$10<span className="text-sm font-normal text-muted-foreground">/mo</span></p>
+              <ul className="mt-6 space-y-3 text-sm">
+                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />500 emails / month</li>
+                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />Unlimited sequences</li>
+                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />Team collaboration</li>
+              </ul>
+              <Link to="/auth" className="block mt-6">
+                <Button variant="outline" className="w-full">Get Started</Button>
+              </Link>
+            </div>
+
+            {/* Growth */}
+            <div className="p-6 rounded-xl border-2 border-primary bg-card relative">
+              <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-primary text-primary-foreground text-xs font-medium px-3 py-1 rounded-full">
+                Popular
+              </div>
+              <h3 className="text-lg font-semibold">Growth</h3>
+              <p className="text-sm text-muted-foreground mt-1">For scaling teams</p>
+              <p className="text-3xl font-bold mt-4">$29<span className="text-sm font-normal text-muted-foreground">/mo</span></p>
+              <ul className="mt-6 space-y-3 text-sm">
+                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />2,000 emails / month</li>
+                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />Unlimited sequences</li>
+                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />Team collaboration</li>
+                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />Priority support</li>
+              </ul>
+              <Link to="/auth" className="block mt-6">
+                <Button className="w-full">Get Started</Button>
+              </Link>
+            </div>
+
+            {/* Enterprise */}
+            <div className="p-6 rounded-xl border border-border/50 bg-card">
+              <h3 className="text-lg font-semibold">Enterprise</h3>
+              <p className="text-sm text-muted-foreground mt-1">For large organizations</p>
+              <p className="text-3xl font-bold mt-4">Custom</p>
+              <ul className="mt-6 space-y-3 text-sm">
+                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />Unlimited emails</li>
+                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />Unlimited sequences</li>
+                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />Dedicated support</li>
+                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />Custom integrations</li>
+              </ul>
+              <Button variant="outline" className="w-full mt-6" asChild>
+                <a href="mailto:support@mora.app">Contact Us</a>
+              </Button>
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* CTA */}
-      <section className="border-t border-border/50 bg-muted/30">
+      <section className="border-t border-border/50">
         <div className="max-w-5xl mx-auto px-6 py-20 md:py-28 text-center">
           <Send className="h-10 w-10 mx-auto text-primary mb-6" />
           <h2 className="text-3xl font-bold">Ready to automate your outreach?</h2>

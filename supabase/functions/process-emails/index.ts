@@ -91,7 +91,36 @@ serve(async (req: Request) => {
 
     const results = [];
 
+    // Check billing allowance per organization before sending
+    const orgIds = [...new Set(scheduledSends.map((s: any) => s.organization_id).filter(Boolean))];
+    const blockedOrgs = new Set<string>();
+    const currentMonth = new Date().toISOString().slice(0, 7); // "YYYY-MM"
+
+    for (const orgId of orgIds) {
+      const { data: allowance } = await supabase.rpc("check_email_allowance", { org_id: orgId });
+      if (allowance && !allowance.allowed) {
+        console.log(`Org ${orgId} blocked: ${allowance.reason}`);
+        blockedOrgs.add(orgId);
+      }
+    }
+
     for (const scheduled of scheduledSends) {
+      // Block sends for orgs that failed billing check
+      if (scheduled.organization_id && blockedOrgs.has(scheduled.organization_id)) {
+        await supabase.from("scheduled_sends").update({ status: "failed" }).eq("id", scheduled.id);
+        await supabase.from("email_logs").insert({
+          customer_id: scheduled.customers?.id,
+          customer_email: scheduled.customers?.email,
+          customer_name: [scheduled.customers?.first_name, scheduled.customers?.last_name].filter(Boolean).join(" "),
+          template_id: scheduled.sequence_steps?.email_templates?.id,
+          status: "failed",
+          error_message: "Billing limit reached or subscription inactive",
+          user_id: scheduled.user_id || null,
+          organization_id: scheduled.organization_id || null,
+        });
+        results.push({ email: scheduled.customers?.email, status: "blocked", reason: "billing" });
+        continue;
+      }
       const customer = scheduled.customers;
       const step = scheduled.sequence_steps;
       const template = step?.email_templates;
@@ -185,6 +214,15 @@ serve(async (req: Request) => {
           user_id: customer.user_id || null,
           organization_id: customer.organization_id || null,
         });
+
+        // Increment email usage counter for billing
+        if (customer.organization_id) {
+          await supabase.rpc("increment_email_usage", {
+            org_id: customer.organization_id,
+            send_month: currentMonth,
+            count: 1,
+          });
+        }
 
         if (step.step_order === 0) {
           await supabase.from("customers").update({ status: "contacted" }).eq("id", customer.id);

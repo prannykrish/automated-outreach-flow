@@ -211,6 +211,38 @@ export type Database = {
           },
         ]
       }
+      email_usage: {
+        Row: {
+          id: string
+          organization_id: string
+          month: string
+          emails_sent: number
+          updated_at: string | null
+        }
+        Insert: {
+          id?: string
+          organization_id: string
+          month: string
+          emails_sent?: number
+          updated_at?: string | null
+        }
+        Update: {
+          id?: string
+          organization_id?: string
+          month?: string
+          emails_sent?: number
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "email_usage_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       email_templates: {
         Row: {
           body: string
@@ -433,24 +465,48 @@ export type Database = {
       }
       organizations: {
         Row: {
+          billing_status: string
           created_at: string | null
+          current_period_end: string | null
+          current_period_start: string | null
           id: string
           invite_code: string
           name: string
+          plan: string
+          plan_email_limit: number
+          stripe_customer_id: string | null
+          stripe_subscription_id: string | null
+          trial_ends_at: string | null
           updated_at: string | null
         }
         Insert: {
+          billing_status?: string
           created_at?: string | null
+          current_period_end?: string | null
+          current_period_start?: string | null
           id?: string
           invite_code?: string
           name: string
+          plan?: string
+          plan_email_limit?: number
+          stripe_customer_id?: string | null
+          stripe_subscription_id?: string | null
+          trial_ends_at?: string | null
           updated_at?: string | null
         }
         Update: {
+          billing_status?: string
           created_at?: string | null
+          current_period_end?: string | null
+          current_period_start?: string | null
           id?: string
           invite_code?: string
           name?: string
+          plan?: string
+          plan_email_limit?: number
+          stripe_customer_id?: string | null
+          stripe_subscription_id?: string | null
+          trial_ends_at?: string | null
           updated_at?: string | null
         }
         Relationships: []
@@ -700,6 +756,20 @@ export type Database = {
       regenerate_invite_code: {
         Args: { org_id: string }
         Returns: string
+      }
+      check_email_allowance: {
+        Args: { org_id: string }
+        Returns: {
+          allowed: boolean
+          used?: number
+          limit?: number
+          plan?: string
+          reason?: string
+        }
+      }
+      increment_email_usage: {
+        Args: { org_id: string; send_month: string; count?: number }
+        Returns: number
       }
     }
     Enums: {

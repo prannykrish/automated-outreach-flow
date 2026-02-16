@@ -7,7 +7,7 @@ declare const Deno: any;
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, apikey",
 };
 
 serve(async (req: Request) => {
@@ -28,18 +28,17 @@ serve(async (req: Request) => {
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
+    const { user_id, access_token } = await req.json();
+
     // Verify the caller is a super admin
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader) {
+    if (!access_token) {
       return new Response(
-        JSON.stringify({ error: "Missing authorization header" }),
+        JSON.stringify({ error: "Missing access token" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Decode the JWT to get the caller's user ID
-    const token = authHeader.replace("Bearer ", "");
-    const { data: { user: caller }, error: authError } = await supabase.auth.getUser(token);
+    const { data: { user: caller }, error: authError } = await supabase.auth.getUser(access_token);
 
     if (authError || !caller) {
       return new Response(
@@ -62,8 +61,6 @@ serve(async (req: Request) => {
       );
     }
 
-    const { user_id } = await req.json();
-
     if (!user_id) {
       return new Response(
         JSON.stringify({ error: "user_id is required" }),
@@ -81,7 +78,13 @@ serve(async (req: Request) => {
 
     // Clean up related records (service role bypasses RLS)
 
-    // 1. Remove from organization_members
+    // 1. Remove join requests
+    await supabase
+      .from("join_requests")
+      .delete()
+      .eq("user_id", user_id);
+
+    // 2. Remove from organization_members
     await supabase
       .from("organization_members")
       .delete()

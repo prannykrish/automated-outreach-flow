@@ -11,7 +11,8 @@ import { Badge } from "@/components/ui/badge";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Plus, Edit, Trash2, Copy, Eye, Folder, FolderOpen, X, ChevronDown, Tags } from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Plus, Edit, Trash2, Copy, Eye, Folder, FolderOpen, MoreHorizontal, ChevronDown, Tags } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -44,6 +45,8 @@ export default function Templates() {
   const [newFolderName, setNewFolderName] = useState("");
   const [draggedTemplate, setDraggedTemplate] = useState<any>(null);
   const [deleteFolderId, setDeleteFolderId] = useState<string | null>(null);
+  const [renameFolderId, setRenameFolderId] = useState<string | null>(null);
+  const [renameFolderName, setRenameFolderName] = useState("");
   const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
   const [formData, setFormData] = useState({
     name: "",
@@ -181,6 +184,22 @@ export default function Templates() {
     },
     onError: (error) => {
       toast({ title: "Error deleting folder", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const renameFolderMutation = useMutation({
+    mutationFn: async ({ id, name }: { id: string; name: string }) => {
+      const { error } = await supabase.from("template_folders").update({ name }).eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["template-folders"] });
+      setRenameFolderId(null);
+      setRenameFolderName("");
+      toast({ title: "Folder renamed" });
+    },
+    onError: (error) => {
+      toast({ title: "Error renaming folder", description: error.message, variant: "destructive" });
     },
   });
 
@@ -734,15 +753,32 @@ export default function Templates() {
                       ({templates?.filter((t) => t.folder_id === folder.id).length || 0})
                     </span>
                   </button>
-                  <Button
-                    variant="ghost"
-                    className="absolute -top-2 -right-2 z-20 h-5 w-5 p-0 opacity-0 group-hover:opacity-100 rounded-full flex items-center justify-center bg-popover border border-border"
-                    onClick={() => setDeleteFolderId(folder.id)}
-                  >
-                    <div className="h-3 w-3 flex items-center justify-center">
-                      <X className="h-full w-full" />
-                    </div>
-                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        className="absolute -top-2 -right-2 z-20 h-5 w-5 p-0 opacity-0 group-hover:opacity-100 rounded-full flex items-center justify-center bg-popover border border-border"
+                      >
+                        <MoreHorizontal className="h-3 w-3" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => {
+                        setRenameFolderId(folder.id);
+                        setRenameFolderName(folder.name);
+                      }}>
+                        <Edit className="h-4 w-4 mr-2" />
+                        Rename
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        className="text-destructive"
+                        onClick={() => setDeleteFolderId(folder.id)}
+                      >
+                        <Trash2 className="h-4 w-4 mr-2" />
+                        Delete
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
               ))}
             </div>
@@ -949,6 +985,35 @@ export default function Templates() {
           </div>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog open={!!renameFolderId} onOpenChange={() => setRenameFolderId(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Rename Folder</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <Input
+              value={renameFolderName}
+              onChange={(e) => setRenameFolderName(e.target.value)}
+              placeholder="Folder name"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && renameFolderName.trim() && renameFolderId) {
+                  renameFolderMutation.mutate({ id: renameFolderId, name: renameFolderName.trim() });
+                }
+              }}
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setRenameFolderId(null)}>Cancel</Button>
+              <Button
+                onClick={() => renameFolderMutation.mutate({ id: renameFolderId!, name: renameFolderName.trim() })}
+                disabled={!renameFolderName.trim() || renameFolderMutation.isPending}
+              >
+                Rename
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog open={!!deleteConfirmPlaceholderId} onOpenChange={() => setDeleteConfirmPlaceholderId(null)}>
         <AlertDialogContent>

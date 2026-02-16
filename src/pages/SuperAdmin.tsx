@@ -18,7 +18,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Building, Users, Shield, Plus, Trash2, UserPlus, Mail, Globe, ShieldCheck, Send, Eye, ArrowRightLeft } from "lucide-react";
+import { Building, Users, Shield, Plus, Trash2, UserPlus, Mail, Globe, ShieldCheck, Send, Eye, ArrowRightLeft, CreditCard } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
 
@@ -298,15 +298,18 @@ export default function SuperAdmin() {
   // Helper to call edge functions with the user's auth token
   const callEdgeFunction = async (functionName: string, body: Record<string, any>) => {
     const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-    const session = (await supabase.auth.getSession()).data.session;
-    const token = session?.access_token || import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+    const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+    const { data: { session: currentSession } } = await supabase.auth.getSession();
+    if (!currentSession?.access_token) {
+      throw new Error("No active session. Please sign in again.");
+    }
     const response = await fetch(`${supabaseUrl}/functions/v1/${functionName}`, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${token}`,
+        "Authorization": `Bearer ${supabaseKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ ...body, access_token: currentSession.access_token }),
     });
     const data = await response.json();
     if (!response.ok || data.error) {
@@ -374,11 +377,14 @@ export default function SuperAdmin() {
     );
   }
 
+  const payingOrgs = organizations?.filter(o => ["starter", "growth", "enterprise"].includes(o.plan) && o.billing_status === "active").length || 0;
+
   const stats = {
     totalOrgs: organizations?.length || 0,
     totalUsers: allUsers?.length || 0,
     totalMembers: allMembers?.length || 0,
     superAdmins: allUsers?.filter(u => u.is_super_admin).length || 0,
+    payingOrgs,
   };
 
   return (
@@ -392,7 +398,7 @@ export default function SuperAdmin() {
       </div>
 
       {/* Stats */}
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-5">
         <Card>
           <CardContent className="pt-6">
             <div className="flex items-center gap-4">
@@ -433,6 +439,17 @@ export default function SuperAdmin() {
               <div>
                 <p className="text-2xl font-bold">{stats.superAdmins}</p>
                 <p className="text-sm text-muted-foreground">Super Admins</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-4">
+              <CreditCard className="h-8 w-8 text-green-600" />
+              <div>
+                <p className="text-2xl font-bold">{stats.payingOrgs}</p>
+                <p className="text-sm text-muted-foreground">Paying Orgs</p>
               </div>
             </div>
           </CardContent>
@@ -500,6 +517,8 @@ export default function SuperAdmin() {
                     <TableHead>Members</TableHead>
                     <TableHead>Domains</TableHead>
                     <TableHead>Emails</TableHead>
+                    <TableHead>Plan</TableHead>
+                    <TableHead>Status</TableHead>
                     <TableHead>Created</TableHead>
                     <TableHead className="w-24">Actions</TableHead>
                   </TableRow>
@@ -528,6 +547,22 @@ export default function SuperAdmin() {
                         <Badge variant="outline">
                           <Mail className="h-3 w-3 mr-1" />
                           {org.organization_emails?.[0]?.count || 0}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className="capitalize">{org.plan || "trial"}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant="outline"
+                          className={
+                            org.billing_status === "active" ? "text-green-600 border-green-500/30" :
+                            org.billing_status === "past_due" ? "text-yellow-600 border-yellow-500/30" :
+                            org.billing_status === "canceled" ? "text-red-600 border-red-500/30" :
+                            ""
+                          }
+                        >
+                          {org.billing_status || "trialing"}
                         </Badge>
                       </TableCell>
                       <TableCell className="text-muted-foreground">

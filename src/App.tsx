@@ -18,6 +18,7 @@ import Landing from "./pages/Landing";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { RequireAuth } from "@/components/RequireAuth";
 import SuperAdmin from "@/pages/SuperAdmin";
+import Billing from "./pages/Billing";
 import Onboarding from "./pages/Onboarding";
 
 function HomeRoute() {
@@ -36,7 +37,13 @@ function OnboardingRoute() {
 }
 
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      refetchOnWindowFocus: false,
+    },
+  },
+});
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
@@ -124,6 +131,17 @@ const App = () => (
                   <RequireAuth>
                     <Layout>
                       <OrganizationPage />
+                    </Layout>
+                  </RequireAuth>
+                }
+              />
+
+              <Route
+                path="/billing"
+                element={
+                  <RequireAuth>
+                    <Layout>
+                      <Billing />
                     </Layout>
                   </RequireAuth>
                 }
