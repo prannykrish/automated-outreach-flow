@@ -92,6 +92,30 @@ export default function Onboarding() {
     }
   };
 
+  const handleCancelRequest = async () => {
+    if (!user?.id) return;
+    setIsSubmitting(true);
+    try {
+      const { error } = await supabase
+        .from("join_requests")
+        .delete()
+        .eq("user_id", user.id)
+        .eq("status", "pending");
+      if (error) throw error;
+
+      await refetchOrganization();
+      setFoundOrg(null);
+      setInviteCode("");
+      setPendingOrgName("");
+      setStep("choose");
+      toast({ title: "Request cancelled" });
+    } catch (err: any) {
+      toast({ title: "Error cancelling request", description: err.message, variant: "destructive" });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const handleRequestJoin = async () => {
     if (!foundOrg || !user?.id) return;
     setIsSubmitting(true);
@@ -304,6 +328,15 @@ export default function Onboarding() {
                   You'll receive an email once an admin reviews it.
                 </p>
               </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleCancelRequest}
+                disabled={isSubmitting}
+              >
+                {isSubmitting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
+                Cancel Request
+              </Button>
               <Button variant="ghost" size="sm" onClick={signOut}>
                 Sign out
               </Button>
