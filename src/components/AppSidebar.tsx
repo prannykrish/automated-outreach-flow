@@ -1,4 +1,4 @@
-import { Mail, GitBranch, UserPlus, BarChart3, LineChart, Settings, LogOut, Building, ShieldCheck, CreditCard } from "lucide-react";
+import { Mail, GitBranch, UserPlus, BarChart3, LineChart, Settings, LogOut, Building, ShieldCheck, CreditCard, Bot } from "lucide-react";
 import Logo from "@/components/Logo";
 import { NavLink } from "@/components/NavLink";
 import { useAuth } from "@/contexts/AuthContext";
@@ -31,6 +31,7 @@ const navItems = [
   { title: "Add Customers", url: "/customers", icon: UserPlus },
   { title: "Pipeline", url: "/pipeline", icon: BarChart3 },
   { title: "Insights", url: "/insights", icon: LineChart },
+  { title: "Agent", url: "/agent", icon: Bot },
 ];
 
 export function AppSidebar() {

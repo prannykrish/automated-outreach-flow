@@ -14,6 +14,76 @@ export type Database = {
   }
   public: {
     Tables: {
+      agent_conversations: {
+        Row: {
+          id: string
+          organization_id: string
+          user_id: string
+          title: string
+          created_at: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          id?: string
+          organization_id: string
+          user_id: string
+          title?: string
+          created_at?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          id?: string
+          organization_id?: string
+          user_id?: string
+          title?: string
+          created_at?: string | null
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agent_conversations_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      agent_messages: {
+        Row: {
+          id: string
+          conversation_id: string
+          role: string
+          content: string
+          context_page: string | null
+          created_at: string | null
+        }
+        Insert: {
+          id?: string
+          conversation_id: string
+          role: string
+          content: string
+          context_page?: string | null
+          created_at?: string | null
+        }
+        Update: {
+          id?: string
+          conversation_id?: string
+          role?: string
+          content?: string
+          context_page?: string | null
+          created_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agent_messages_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "agent_conversations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       customers: {
         Row: {
           created_at: string | null
@@ -239,6 +309,57 @@ export type Database = {
             columns: ["organization_id"]
             isOneToOne: false
             referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      invitations: {
+        Row: {
+          id: string
+          organization_id: string
+          email: string
+          role: string
+          token: string
+          status: string
+          invited_by: string | null
+          expires_at: string | null
+          created_at: string | null
+        }
+        Insert: {
+          id?: string
+          organization_id: string
+          email: string
+          role?: string
+          token?: string
+          status?: string
+          invited_by?: string | null
+          expires_at?: string | null
+          created_at?: string | null
+        }
+        Update: {
+          id?: string
+          organization_id?: string
+          email?: string
+          role?: string
+          token?: string
+          status?: string
+          invited_by?: string | null
+          expires_at?: string | null
+          created_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "invitations_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "invitations_invited_by_fkey"
+            columns: ["invited_by"]
+            isOneToOne: false
+            referencedRelation: "users"
             referencedColumns: ["id"]
           },
         ]
@@ -473,7 +594,10 @@ export type Database = {
           invite_code: string
           name: string
           plan: string
+          plan_domain_limit: number
+          plan_email_address_limit: number
           plan_email_limit: number
+          plan_member_limit: number
           stripe_customer_id: string | null
           stripe_subscription_id: string | null
           trial_ends_at: string | null
@@ -488,7 +612,10 @@ export type Database = {
           invite_code?: string
           name: string
           plan?: string
+          plan_domain_limit?: number
+          plan_email_address_limit?: number
           plan_email_limit?: number
+          plan_member_limit?: number
           stripe_customer_id?: string | null
           stripe_subscription_id?: string | null
           trial_ends_at?: string | null
@@ -503,7 +630,10 @@ export type Database = {
           invite_code?: string
           name?: string
           plan?: string
+          plan_domain_limit?: number
+          plan_email_address_limit?: number
           plan_email_limit?: number
+          plan_member_limit?: number
           stripe_customer_id?: string | null
           stripe_subscription_id?: string | null
           trial_ends_at?: string | null
@@ -770,6 +900,18 @@ export type Database = {
       increment_email_usage: {
         Args: { org_id: string; send_month: string; count?: number }
         Returns: number
+      }
+      create_organization_with_owner: {
+        Args: { org_name: string }
+        Returns: string
+      }
+      get_invitation_details: {
+        Args: { invite_token: string }
+        Returns: { organization_name: string; invited_email: string; invited_role: string; invite_status: string }[]
+      }
+      accept_invitation: {
+        Args: { invite_token: string }
+        Returns: string
       }
     }
     Enums: {

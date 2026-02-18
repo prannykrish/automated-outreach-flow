@@ -43,6 +43,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const uid = userId || user?.id;
     if (!uid) return;
     try {
+      // If there's a pending invite token (from invite link sign-up), accept it first
+      const pendingInviteToken = sessionStorage.getItem("pending_invite_token");
+      if (pendingInviteToken) {
+        sessionStorage.removeItem("pending_invite_token");
+        try {
+          await supabase.rpc("accept_invitation", { invite_token: pendingInviteToken });
+        } catch (err) {
+          console.error("Error accepting invitation:", err);
+        }
+      }
+
       const { data } = await supabase
         .from("organization_members")
         .select("organization_id")

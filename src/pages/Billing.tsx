@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { CreditCard, Mail, Clock, CheckCircle, AlertTriangle, Loader2 } from "lucide-react";
+import { CreditCard, Mail, Clock, CheckCircle, AlertTriangle, Loader2, Globe, Users } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -13,12 +13,12 @@ import { useSearchParams } from "react-router-dom";
 const STARTER_PRICE_ID = import.meta.env.VITE_STRIPE_STARTER_PRICE_ID;
 const GROWTH_PRICE_ID = import.meta.env.VITE_STRIPE_GROWTH_PRICE_ID;
 
-const planDetails: Record<string, { name: string; price: string; emails: string }> = {
-  trial: { name: "Free Trial", price: "Free", emails: "500 / month" },
-  starter: { name: "Starter", price: "$10/mo", emails: "500 / month" },
-  growth: { name: "Growth", price: "$29/mo", emails: "2,000 / month" },
-  enterprise: { name: "Enterprise", price: "Custom", emails: "Unlimited" },
-  canceled: { name: "Canceled", price: "—", emails: "—" },
+const planDetails: Record<string, { name: string; price: string }> = {
+  trial: { name: "Free Trial", price: "Free" },
+  starter: { name: "Starter", price: "$19/mo" },
+  growth: { name: "Growth", price: "$49/mo" },
+  enterprise: { name: "Enterprise", price: "Custom" },
+  canceled: { name: "Canceled", price: "—" },
 };
 
 function statusBadge(status: string) {
@@ -34,6 +34,19 @@ function statusBadge(status: string) {
     default:
       return <Badge variant="outline">{status}</Badge>;
   }
+}
+
+function UsageBar({ label, used, limit, icon }: { label: string; used: number; limit: number; icon: React.ReactNode }) {
+  const percent = Math.min((used / limit) * 100, 100);
+  return (
+    <div>
+      <div className="flex items-center justify-between text-sm mb-1">
+        <span className="flex items-center gap-1.5">{icon}{label}</span>
+        <span className="text-muted-foreground">{used} / {limit}</span>
+      </div>
+      <Progress value={percent} className="h-1.5" />
+    </div>
+  );
 }
 
 export default function Billing() {
@@ -58,7 +71,7 @@ export default function Billing() {
   });
 
   const currentMonth = new Date().toISOString().slice(0, 7);
-  const { data: usage } = useQuery({
+  const { data: emailUsage } = useQuery({
     queryKey: ["email-usage", organizationId, currentMonth],
     queryFn: async () => {
       const { data } = await supabase
@@ -68,6 +81,24 @@ export default function Billing() {
         .eq("month", currentMonth)
         .maybeSingle();
       return data?.emails_sent || 0;
+    },
+    enabled: !!organizationId,
+  });
+
+  // Resource counts
+  const { data: resourceCounts } = useQuery({
+    queryKey: ["billing-resources", organizationId],
+    queryFn: async () => {
+      const [domains, emails, members] = await Promise.all([
+        supabase.from("organization_domains").select("id", { count: "exact", head: true }).eq("organization_id", organizationId!),
+        supabase.from("organization_emails").select("id", { count: "exact", head: true }).eq("organization_id", organizationId!),
+        supabase.from("organization_members").select("id", { count: "exact", head: true }).eq("organization_id", organizationId!),
+      ]);
+      return {
+        domains: domains.count || 0,
+        emails: emails.count || 0,
+        members: members.count || 0,
+      };
     },
     enabled: !!organizationId,
   });
@@ -110,9 +141,8 @@ export default function Billing() {
   if (!org) return null;
 
   const plan = planDetails[org.plan] || planDetails.trial;
-  const emailsSent = usage || 0;
-  const emailLimit = org.plan_email_limit || 500;
-  const usagePercent = Math.min((emailsSent / emailLimit) * 100, 100);
+  const emailsSent = emailUsage || 0;
+  const emailLimit = org.plan_email_limit || 1000;
 
   const trialEndsAt = org.trial_ends_at ? new Date(org.trial_ends_at) : null;
   const now = new Date();
@@ -174,31 +204,42 @@ export default function Billing() {
           </CardContent>
         </Card>
 
-        {/* Usage */}
+        {/* Resource Usage */}
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Mail className="h-5 w-5" />
-              Email Usage
+              Usage
             </CardTitle>
             <CardDescription>
               {new Date().toLocaleString("default", { month: "long", year: "numeric" })}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div>
-              <div className="flex justify-between text-sm mb-2">
-                <span>{emailsSent.toLocaleString()} sent</span>
-                <span>{emailLimit.toLocaleString()} limit</span>
-              </div>
-              <Progress value={usagePercent} className="h-2" />
-            </div>
-            {usagePercent >= 90 && (
-              <div className="flex items-center gap-2 text-sm text-yellow-600">
-                <AlertTriangle className="h-4 w-4" />
-                {usagePercent >= 100 ? "Monthly limit reached" : "Approaching monthly limit"}
-              </div>
-            )}
+            <UsageBar
+              label="Emails sent"
+              used={emailsSent}
+              limit={emailLimit}
+              icon={<Mail className="h-3.5 w-3.5 text-muted-foreground" />}
+            />
+            <UsageBar
+              label="Domains"
+              used={resourceCounts?.domains || 0}
+              limit={org.plan_domain_limit || 1}
+              icon={<Globe className="h-3.5 w-3.5 text-muted-foreground" />}
+            />
+            <UsageBar
+              label="Sending emails"
+              used={resourceCounts?.emails || 0}
+              limit={org.plan_email_address_limit || 2}
+              icon={<Mail className="h-3.5 w-3.5 text-muted-foreground" />}
+            />
+            <UsageBar
+              label="Team members"
+              used={resourceCounts?.members || 0}
+              limit={org.plan_member_limit || 3}
+              icon={<Users className="h-3.5 w-3.5 text-muted-foreground" />}
+            />
           </CardContent>
         </Card>
       </div>
@@ -215,11 +256,12 @@ export default function Billing() {
                 <CardDescription>For small teams getting started</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <p className="text-3xl font-bold">$10<span className="text-sm font-normal text-muted-foreground">/mo</span></p>
+                <p className="text-3xl font-bold">$19<span className="text-sm font-normal text-muted-foreground">/mo</span></p>
                 <ul className="space-y-2 text-sm text-muted-foreground">
-                  <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />500 emails / month</li>
-                  <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />Unlimited sequences</li>
-                  <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />Team collaboration</li>
+                  <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />1,000 emails / month</li>
+                  <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />1 domain</li>
+                  <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />2 sending emails</li>
+                  <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />3 team members</li>
                 </ul>
                 <Button
                   className="w-full"
@@ -243,12 +285,12 @@ export default function Billing() {
                 <CardDescription>For scaling teams</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <p className="text-3xl font-bold">$29<span className="text-sm font-normal text-muted-foreground">/mo</span></p>
+                <p className="text-3xl font-bold">$49<span className="text-sm font-normal text-muted-foreground">/mo</span></p>
                 <ul className="space-y-2 text-sm text-muted-foreground">
-                  <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />2,000 emails / month</li>
-                  <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />Unlimited sequences</li>
-                  <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />Team collaboration</li>
-                  <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />Priority support</li>
+                  <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />5,000 emails / month</li>
+                  <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />3 domains</li>
+                  <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />5 sending emails</li>
+                  <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />10 team members</li>
                 </ul>
                 <Button
                   className="w-full"
@@ -271,9 +313,9 @@ export default function Billing() {
                 <p className="text-3xl font-bold">Custom</p>
                 <ul className="space-y-2 text-sm text-muted-foreground">
                   <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />Unlimited emails</li>
-                  <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />Unlimited sequences</li>
+                  <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />Custom domains</li>
+                  <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />Unlimited members</li>
                   <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />Dedicated support</li>
-                  <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />Custom integrations</li>
                 </ul>
                 <Button variant="outline" className="w-full" asChild>
                   <a href="mailto:support@mora.app">Contact Us</a>
@@ -289,8 +331,8 @@ export default function Billing() {
         <Card>
           <CardContent className="flex items-center justify-between py-4">
             <div>
-              <p className="font-medium">Need more emails?</p>
-              <p className="text-sm text-muted-foreground">Upgrade to Growth for 2,000 emails/month.</p>
+              <p className="font-medium">Need more capacity?</p>
+              <p className="text-sm text-muted-foreground">Upgrade to Growth for 5,000 emails, 3 domains, and 10 members.</p>
             </div>
             <Button
               disabled={loadingPlan === GROWTH_PRICE_ID}

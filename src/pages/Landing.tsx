@@ -70,9 +70,9 @@ export default function Landing() {
       {/* Hero */}
       <section className="max-w-5xl mx-auto px-6 py-24 md:py-32 text-center">
         <h1 className="text-4xl md:text-6xl font-bold tracking-tight">
-          Automated outreach
+          The Email for
           <br />
-          <span className="text-muted-foreground">that actually works.</span>
+          <span className="text-muted-foreground">Founders.</span>
         </h1>
         <p className="mt-6 text-lg text-muted-foreground max-w-2xl mx-auto">
           Mora helps you build personalized email sequences, manage your pipeline, and close more deals — all on autopilot.
@@ -153,11 +153,12 @@ export default function Landing() {
             <div className="p-6 rounded-xl border border-border/50 bg-card">
               <h3 className="text-lg font-semibold">Starter</h3>
               <p className="text-sm text-muted-foreground mt-1">For small teams</p>
-              <p className="text-3xl font-bold mt-4">$10<span className="text-sm font-normal text-muted-foreground">/mo</span></p>
+              <p className="text-3xl font-bold mt-4">$19<span className="text-sm font-normal text-muted-foreground">/mo</span></p>
               <ul className="mt-6 space-y-3 text-sm">
-                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />500 emails / month</li>
-                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />Unlimited sequences</li>
-                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />Team collaboration</li>
+                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />1,000 emails / month</li>
+                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />1 domain</li>
+                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />2 sending emails</li>
+                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />3 team members</li>
               </ul>
               <Link to="/auth" className="block mt-6">
                 <Button variant="outline" className="w-full">Get Started</Button>
@@ -171,12 +172,12 @@ export default function Landing() {
               </div>
               <h3 className="text-lg font-semibold">Growth</h3>
               <p className="text-sm text-muted-foreground mt-1">For scaling teams</p>
-              <p className="text-3xl font-bold mt-4">$29<span className="text-sm font-normal text-muted-foreground">/mo</span></p>
+              <p className="text-3xl font-bold mt-4">$49<span className="text-sm font-normal text-muted-foreground">/mo</span></p>
               <ul className="mt-6 space-y-3 text-sm">
-                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />2,000 emails / month</li>
-                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />Unlimited sequences</li>
-                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />Team collaboration</li>
-                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />Priority support</li>
+                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />5,000 emails / month</li>
+                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />3 domains</li>
+                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />5 sending emails</li>
+                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />10 team members</li>
               </ul>
               <Link to="/auth" className="block mt-6">
                 <Button className="w-full">Get Started</Button>
@@ -190,9 +191,9 @@ export default function Landing() {
               <p className="text-3xl font-bold mt-4">Custom</p>
               <ul className="mt-6 space-y-3 text-sm">
                 <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />Unlimited emails</li>
-                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />Unlimited sequences</li>
+                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />Custom domains</li>
+                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />Unlimited members</li>
                 <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />Dedicated support</li>
-                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />Custom integrations</li>
               </ul>
               <Button variant="outline" className="w-full mt-6" asChild>
                 <a href="mailto:support@mora.app">Contact Us</a>

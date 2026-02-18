@@ -45,21 +45,10 @@ export default function Onboarding() {
     if (!orgName.trim() || !user?.id) return;
     setIsSubmitting(true);
     try {
-      const { data: org, error: orgError } = await supabase
-        .from("organizations")
-        .insert({ name: orgName.trim() })
-        .select()
-        .single();
-      if (orgError) throw orgError;
-
-      const { error: memberError } = await supabase
-        .from("organization_members")
-        .insert({
-          organization_id: org.id,
-          user_id: user.id,
-          role: "admin",
-        });
-      if (memberError) throw memberError;
+      const { data, error } = await supabase.rpc("create_organization_with_owner", {
+        org_name: orgName.trim(),
+      });
+      if (error) throw error;
 
       await refetchOrganization();
       toast({ title: "Organization created!" });

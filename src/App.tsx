@@ -16,10 +16,12 @@ import OrganizationPage from "@/pages/Organization";
 import AuthPage from "./pages/Auth";
 import Landing from "./pages/Landing";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
+import { AgentProvider } from "@/contexts/AgentContext";
 import { RequireAuth } from "@/components/RequireAuth";
 import SuperAdmin from "@/pages/SuperAdmin";
 import Billing from "./pages/Billing";
 import Onboarding from "./pages/Onboarding";
+import Agent from "./pages/Agent";
 
 function HomeRoute() {
   const { session, loading } = useAuth();
@@ -53,6 +55,7 @@ const App = () => (
         <Sonner />
         <BrowserRouter>
           <AuthProvider>
+            <AgentProvider>
             <Routes>
               <Route path="/auth" element={<AuthPage />} />
               <Route path="/onboarding" element={<OnboardingRoute />} />
@@ -158,8 +161,20 @@ const App = () => (
   }
 />
 
+              <Route
+                path="/agent"
+                element={
+                  <RequireAuth>
+                    <Layout>
+                      <Agent />
+                    </Layout>
+                  </RequireAuth>
+                }
+              />
+
               <Route path="*" element={<NotFound />} />
             </Routes>
+            </AgentProvider>
           </AuthProvider>
         </BrowserRouter>
       </TooltipProvider>

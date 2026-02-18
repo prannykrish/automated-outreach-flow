@@ -1,13 +1,17 @@
-import React, { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import React, { useState, useEffect } from "react";
+import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Building2 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import { supabase } from "@/integrations/supabase/client";
 
 export default function AuthPage() {
-  const [mode, setMode] = useState<"signin" | "signup">("signin");
+  const [searchParams] = useSearchParams();
+  const inviteToken = searchParams.get("invite");
+
+  const [mode, setMode] = useState<"signin" | "signup">(inviteToken ? "signup" : "signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [firstName, setFirstName] = useState("");
@@ -16,6 +20,37 @@ export default function AuthPage() {
   const [error, setError] = useState("");
   const { signIn, signUp } = useAuth();
   const nav = useNavigate();
+
+  // Invite details
+  const [inviteOrgName, setInviteOrgName] = useState<string | null>(null);
+  const [inviteError, setInviteError] = useState<string | null>(null);
+
+  // Fetch invite details on mount
+  useEffect(() => {
+    if (!inviteToken) return;
+    const fetchInvite = async () => {
+      const { data, error } = await supabase.rpc("get_invitation_details", {
+        invite_token: inviteToken,
+      });
+      if (error || !data || data.length === 0) {
+        setInviteError("This invitation link is invalid. Please ask your admin to send a new one.");
+        return;
+      }
+      const invite = data[0];
+      if (invite.invite_status === "accepted") {
+        setInviteOrgName(invite.organization_name);
+        setInviteError("This invitation has already been accepted. Sign in to access your account.");
+        return;
+      }
+      if (invite.invite_status === "expired") {
+        setInviteError("This invitation has expired. Please ask your admin to send a new one.");
+        return;
+      }
+      setInviteOrgName(invite.organization_name);
+      setEmail(invite.invited_email);
+    };
+    fetchInvite();
+  }, [inviteToken]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -32,6 +67,11 @@ export default function AuthPage() {
       return;
     }
     try {
+      // Store invite token so AuthContext can accept it during fetchOrganization
+      if (inviteToken) {
+        sessionStorage.setItem("pending_invite_token", inviteToken);
+      }
+
       if (mode === "signin") {
         const res = await signIn(email, password);
         if (res.error) throw res.error;
@@ -39,8 +79,12 @@ export default function AuthPage() {
         const res = await signUp(email, password, { first_name: firstName, last_name: lastName, name: `${firstName} ${lastName}`.trim() });
         if (res.error) throw res.error;
       }
-      nav("/pipeline");
+
+      // Navigation happens automatically via RequireAuth once AuthContext resolves the org
+      nav(inviteToken ? "/templates" : "/pipeline");
     } catch (err: any) {
+      // Clear the token if auth failed
+      if (inviteToken) sessionStorage.removeItem("pending_invite_token");
       setError(err.message === "Invalid login credentials" ? "Incorrect email or password" : err.message || "Authentication error");
     } finally {
       setLoading(false);
@@ -56,10 +100,30 @@ export default function AuthPage() {
             Back to website
           </Link>
         </div>
+
+        {/* Invite banner */}
+        {inviteToken && inviteOrgName && (
+          <div className="mb-6 rounded-lg border border-primary/30 bg-primary/5 p-4 flex items-center gap-3">
+            <Building2 className="h-5 w-5 text-primary shrink-0" />
+            <div>
+              <p className="text-sm font-medium">You've been invited to join</p>
+              <p className="text-base font-bold">{inviteOrgName}</p>
+            </div>
+          </div>
+        )}
+
+        {inviteToken && inviteError && (
+          <div className="mb-6 rounded-lg border border-red-500/30 bg-red-500/5 p-4">
+            <p className="text-sm text-red-600 dark:text-red-400">{inviteError}</p>
+          </div>
+        )}
+
         <div className="text-center mb-8">
           <h1 className="text-2xl font-bold">Welcome to Mora</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            {mode === "signin" ? "Sign in to your account" : "Create a new account"}
+            {inviteToken && inviteOrgName
+              ? (mode === "signin" ? "Sign in to accept your invitation" : "Create an account to get started")
+              : (mode === "signin" ? "Sign in to your account" : "Create a new account")}
           </p>
         </div>
 

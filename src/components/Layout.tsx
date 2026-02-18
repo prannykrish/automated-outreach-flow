@@ -2,11 +2,14 @@ import { SidebarProvider, SidebarTrigger, SidebarInset } from "@/components/ui/s
 import { AppSidebar } from "@/components/AppSidebar";
 import { useTheme } from "@/contexts/ThemeContext";
 import { Button } from "@/components/ui/button";
-import { Sun, Moon, LogOut, AlertTriangle } from "lucide-react";
+import { Sun, Moon, LogOut, AlertTriangle, Bot } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
+import { useAgent } from "@/contexts/AgentContext";
+import AgentSidebar from "@/components/AgentSidebar";
+import { useEffect } from "react";
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -54,6 +57,12 @@ function TrialBanner() {
 export function Layout({ children }: LayoutProps) {
   const { theme, toggleTheme } = useTheme();
   const { user, signOut, profile } = useAuth();
+  const { toggleSidebar, setCurrentPage } = useAgent();
+  const location = useLocation();
+
+  useEffect(() => {
+    setCurrentPage(location.pathname);
+  }, [location.pathname, setCurrentPage]);
 
   const UserInfo: React.FC = () => (
     <div className="flex items-center gap-3 pr-2">
@@ -71,6 +80,7 @@ export function Layout({ children }: LayoutProps) {
   );
 
   return (
+    <>
     <SidebarProvider>
       <div className="min-h-screen flex w-full">
         <AppSidebar />
@@ -79,6 +89,14 @@ export function Layout({ children }: LayoutProps) {
             <SidebarTrigger />
             <div className="flex items-center gap-3">
               <UserInfo />
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={toggleSidebar}
+                title="Ask Mora"
+              >
+                <Bot className="h-5 w-5" />
+              </Button>
               <Button
                 variant="ghost"
                 size="icon"
@@ -100,5 +118,7 @@ export function Layout({ children }: LayoutProps) {
         </SidebarInset>
       </div>
     </SidebarProvider>
+    <AgentSidebar />
+    </>
   );
 }

@@ -44,9 +44,9 @@ serve(async (req: Request) => {
     const GROWTH_PRICE = Deno.env.get("STRIPE_GROWTH_PRICE_ID");
 
     const priceToPlan = (priceId: string) => {
-      if (priceId === STARTER_PRICE) return { plan: "starter", limit: 500 };
-      if (priceId === GROWTH_PRICE) return { plan: "growth", limit: 2000 };
-      return { plan: "enterprise", limit: 99999 };
+      if (priceId === STARTER_PRICE) return { plan: "starter", limit: 1000, domainLimit: 1, emailAddressLimit: 2, memberLimit: 3 };
+      if (priceId === GROWTH_PRICE) return { plan: "growth", limit: 5000, domainLimit: 3, emailAddressLimit: 5, memberLimit: 10 };
+      return { plan: "enterprise", limit: 99999, domainLimit: 100, emailAddressLimit: 100, memberLimit: 999 };
     };
 
     // Helper to find org by stripe_customer_id
@@ -93,12 +93,15 @@ serve(async (req: Request) => {
         }
 
         const priceId = subscription.items.data[0]?.price?.id;
-        const { plan, limit } = priceToPlan(priceId || "");
+        const { plan, limit, domainLimit, emailAddressLimit, memberLimit } = priceToPlan(priceId || "");
 
         await supabase.from("organizations").update({
           stripe_subscription_id: subscriptionId,
           plan,
           plan_email_limit: limit,
+          plan_domain_limit: domainLimit,
+          plan_email_address_limit: emailAddressLimit,
+          plan_member_limit: memberLimit,
           billing_status: "active",
           current_period_start: new Date(subscription.current_period_start * 1000).toISOString(),
           current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
@@ -114,7 +117,7 @@ serve(async (req: Request) => {
         if (!orgId) break;
 
         const priceId = subscription.items.data[0]?.price?.id;
-        const { plan, limit } = priceToPlan(priceId || "");
+        const { plan, limit, domainLimit, emailAddressLimit, memberLimit } = priceToPlan(priceId || "");
 
         const statusMap: Record<string, string> = {
           active: "active",
@@ -127,6 +130,9 @@ serve(async (req: Request) => {
         await supabase.from("organizations").update({
           plan,
           plan_email_limit: limit,
+          plan_domain_limit: domainLimit,
+          plan_email_address_limit: emailAddressLimit,
+          plan_member_limit: memberLimit,
           billing_status: statusMap[subscription.status] || "active",
           current_period_start: new Date(subscription.current_period_start * 1000).toISOString(),
           current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),

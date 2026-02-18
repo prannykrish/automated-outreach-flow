@@ -208,48 +208,119 @@ export default function Organization() {
     enabled: !!organization?.id && !!session,
   });
 
-  // Invite member mutation
+  // Pending invitations query
+  const { data: pendingInvitations } = useQuery({
+    queryKey: ["org-invitations", organization?.id],
+    queryFn: async () => {
+      if (!organization?.id) return [];
+      const { data, error } = await supabase
+        .from("invitations")
+        .select("*")
+        .eq("organization_id", organization.id)
+        .eq("status", "pending")
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      return data;
+    },
+    enabled: !!organization?.id && !!session,
+  });
+
+  // Invite member mutation — creates invitation + sends email
   const inviteMemberMutation = useMutation({
     mutationFn: async ({ email, role }: { email: string; role: string }) => {
-      // First, find the user by email
-      const { data: targetUser, error: userError } = await supabase
-        .from("users")
-        .select("id")
-        .eq("email", email)
-        .maybeSingle();
-
-      if (userError) throw userError;
-      if (!targetUser) throw new Error("User not found. They must create an account first.");
+      // Check member limit (count existing members + pending invitations)
+      const memberLimit = organization?.plan_member_limit ?? 3;
+      const totalCount = (members?.length || 0) + (pendingInvitations?.length || 0);
+      if (totalCount >= memberLimit) {
+        throw new Error(`Your plan allows up to ${memberLimit} team members. Upgrade your plan for more.`);
+      }
 
       // Check if already a member
-      const { data: existing } = await supabase
+      const { data: existingMembers } = await supabase
         .from("organization_members")
-        .select("id")
-        .eq("organization_id", organization?.id)
-        .eq("user_id", targetUser.id)
-        .maybeSingle();
+        .select("id, users!inner(email)")
+        .eq("organization_id", organization?.id);
 
-      if (existing) throw new Error("User is already a member of this organization.");
+      if (existingMembers?.some((m: any) => m.users?.email === email)) {
+        throw new Error("This person is already a member of your organization.");
+      }
 
-      // Add to organization
-      const { error } = await supabase.from("organization_members").insert({
-        organization_id: organization?.id,
-        user_id: targetUser.id,
-        role,
-      });
+      // Create invitation
+      const { data: invitation, error } = await supabase
+        .from("invitations")
+        .insert({
+          organization_id: organization?.id,
+          email,
+          role,
+          invited_by: user?.id,
+        })
+        .select("token")
+        .single();
 
-      if (error) throw error;
+      if (error) {
+        if (error.code === "23505") throw new Error("An invitation has already been sent to this email.");
+        throw error;
+      }
+
+      // Send invite email
+      const appUrl = window.location.origin;
+      const inviteLink = `${appUrl}/auth?invite=${invitation.token}`;
+      await sendNotificationEmail(
+        email,
+        `You've been invited to join ${organization?.name} on Mora`,
+        `<p>You've been invited to join <strong>${organization?.name}</strong> on Mora.</p>
+         <p><a href="${inviteLink}" style="display:inline-block;padding:10px 20px;background:#000;color:#fff;border-radius:6px;text-decoration:none;">Accept Invitation</a></p>
+         <p style="color:#666;font-size:13px;">Or copy this link: ${inviteLink}</p>`
+      );
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["org-members"] });
-      queryClient.invalidateQueries({ queryKey: ["org-members", organization?.id] });
+      queryClient.invalidateQueries({ queryKey: ["org-invitations"] });
       setShowInviteDialog(false);
       setInviteEmail("");
       setInviteRole("member");
-      toast({ title: "Member added successfully" });
+      toast({ title: "Invitation sent!" });
     },
     onError: (error) => {
-      toast({ title: "Error adding member", description: error.message, variant: "destructive" });
+      toast({ title: "Error sending invitation", description: error.message, variant: "destructive" });
+    },
+  });
+
+  // Revoke invitation
+  const revokeInvitationMutation = useMutation({
+    mutationFn: async (invitationId: string) => {
+      const { error } = await supabase
+        .from("invitations")
+        .delete()
+        .eq("id", invitationId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["org-invitations"] });
+      toast({ title: "Invitation revoked" });
+    },
+    onError: (error) => {
+      toast({ title: "Error revoking invitation", description: error.message, variant: "destructive" });
+    },
+  });
+
+  // Resend invitation
+  const resendInvitationMutation = useMutation({
+    mutationFn: async (invitation: any) => {
+      const appUrl = window.location.origin;
+      const inviteLink = `${appUrl}/auth?invite=${invitation.token}`;
+      await sendNotificationEmail(
+        invitation.email,
+        `Reminder: You've been invited to join ${organization?.name} on Mora`,
+        `<p>This is a reminder that you've been invited to join <strong>${organization?.name}</strong> on Mora.</p>
+         <p><a href="${inviteLink}" style="display:inline-block;padding:10px 20px;background:#000;color:#fff;border-radius:6px;text-decoration:none;">Accept Invitation</a></p>
+         <p style="color:#666;font-size:13px;">Or copy this link: ${inviteLink}</p>`
+      );
+    },
+    onSuccess: () => {
+      toast({ title: "Invitation resent!" });
+    },
+    onError: (error) => {
+      toast({ title: "Error resending invitation", description: error.message, variant: "destructive" });
     },
   });
 
@@ -275,6 +346,11 @@ export default function Organization() {
   // Add domain mutation - uses edge function to register with Resend
   const addDomainMutation = useMutation({
     mutationFn: async (domain: string) => {
+      // Check domain limit
+      const domainLimit = organization?.plan_domain_limit ?? 1;
+      if ((domains?.length || 0) >= domainLimit) {
+        throw new Error(`Your plan allows up to ${domainLimit} domain${domainLimit !== 1 ? "s" : ""}. Upgrade your plan for more.`);
+      }
       return callManageDomains({
         action: "add",
         domain: domain.toLowerCase().trim(),
@@ -376,6 +452,11 @@ export default function Organization() {
   // Add email mutation
   const addEmailMutation = useMutation({
     mutationFn: async ({ email, displayName, replyTo }: { email: string; displayName: string; replyTo: string }) => {
+      // Check sending email limit
+      const emailAddressLimit = organization?.plan_email_address_limit ?? 2;
+      if ((emails?.length || 0) >= emailAddressLimit) {
+        throw new Error(`Your plan allows up to ${emailAddressLimit} sending email${emailAddressLimit !== 1 ? "s" : ""}. Upgrade your plan for more.`);
+      }
       const { error } = await supabase.from("organization_emails").insert({
         organization_id: organization?.id,
         email: email.toLowerCase().trim(),
@@ -453,22 +534,17 @@ export default function Organization() {
     },
   });
 
-  // Helper to send notification email using org's default sending email
+  // Helper to send transactional emails (invites, approvals, etc.)
   const sendNotificationEmail = async (to: string, subject: string, html: string) => {
     const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
     const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-    // Use org's default email as from address
-    const defaultEmail = emails?.find((e: any) => e.is_default);
-    const fromEmail = defaultEmail
-      ? (defaultEmail.display_name ? `${defaultEmail.display_name} <${defaultEmail.email}>` : defaultEmail.email)
-      : emails?.[0]?.email || undefined;
     await fetch(`${supabaseUrl}/functions/v1/send`, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${supabaseKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ to, from: fromEmail, subject, html, text: html.replace(/<[^>]+>/g, "") }),
+      body: JSON.stringify({ to, from: "Mora <hello@mora.software>", subject, html, text: html.replace(/<[^>]+>/g, "") }),
     });
   };
 
@@ -627,7 +703,7 @@ export default function Organization() {
                 <Users className="h-5 w-5" />
                 Members
               </CardTitle>
-              <CardDescription>{members?.length || 0} members in this organization</CardDescription>
+              <CardDescription>{members?.length || 0} / {organization?.plan_member_limit ?? 3} members</CardDescription>
               <div className="flex items-center gap-2 mt-2">
                 <span className="text-xs text-muted-foreground">Invite Code:</span>
                 <code className="bg-muted px-2 py-0.5 rounded text-sm font-mono tracking-widest select-all">
@@ -661,12 +737,13 @@ export default function Organization() {
               <DialogTrigger asChild>
                 <Button>
                   <Plus className="h-4 w-4 mr-2" />
-                  Add Member
+                  Invite Member
                 </Button>
               </DialogTrigger>
               <DialogContent>
                 <DialogHeader>
-                  <DialogTitle>Add Member</DialogTitle>
+                  <DialogTitle>Invite Member</DialogTitle>
+                  <DialogDescription>They'll receive an email with a link to create their account and join your organization.</DialogDescription>
                 </DialogHeader>
                 <div className="space-y-4">
                   <div>
@@ -696,7 +773,8 @@ export default function Organization() {
                       onClick={() => inviteMemberMutation.mutate({ email: inviteEmail, role: inviteRole })}
                       disabled={!inviteEmail || inviteMemberMutation.isPending}
                     >
-                      Add Member
+                      {inviteMemberMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Mail className="h-4 w-4 mr-2" />}
+                      Send Invitation
                     </Button>
                   </div>
                 </div>
@@ -763,6 +841,70 @@ export default function Organization() {
               ))}
             </TableBody>
           </Table>
+
+          {/* Pending Invitations Sub-section */}
+          {pendingInvitations && pendingInvitations.length > 0 && (
+            <div className="mt-6 pt-6 border-t">
+              <div className="flex items-center gap-2 mb-3">
+                <Mail className="h-4 w-4 text-muted-foreground" />
+                <h3 className="text-sm font-semibold">Pending Invitations</h3>
+                <Badge variant="outline" className="text-xs">{pendingInvitations.length}</Badge>
+              </div>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Email</TableHead>
+                    <TableHead>Role</TableHead>
+                    <TableHead>Sent</TableHead>
+                    <TableHead className="text-right">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {pendingInvitations.map((inv: any) => (
+                    <TableRow key={inv.id}>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <div className="w-8 h-8 bg-muted rounded-full flex items-center justify-center">
+                            <Mail className="h-3.5 w-3.5 text-muted-foreground" />
+                          </div>
+                          <div>
+                            <p className="font-medium">{inv.email}</p>
+                            <Badge variant="outline" className="text-xs mt-0.5">Invited</Badge>
+                          </div>
+                        </div>
+                      </TableCell>
+                      <TableCell className="capitalize">{inv.role}</TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {format(new Date(inv.created_at), "MMM d, yyyy")}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => resendInvitationMutation.mutate(inv)}
+                            disabled={resendInvitationMutation.isPending}
+                            title="Resend invitation"
+                          >
+                            <RefreshCw className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => revokeInvitationMutation.mutate(inv.id)}
+                            disabled={revokeInvitationMutation.isPending}
+                            title="Revoke invitation"
+                          >
+                            <X className="h-4 w-4 text-destructive" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
 
           {/* Requests Sub-section */}
           <div className="mt-6 pt-6 border-t">
@@ -834,7 +976,7 @@ export default function Organization() {
                 <Globe className="h-5 w-5" />
                 Domains
               </CardTitle>
-              <CardDescription>Verified domains for sending emails</CardDescription>
+              <CardDescription>{domains?.length || 0} / {organization?.plan_domain_limit ?? 1} domains</CardDescription>
             </div>
             <Dialog open={showDomainDialog} onOpenChange={setShowDomainDialog}>
               <DialogTrigger asChild>
@@ -979,17 +1121,7 @@ export default function Organization() {
                 Sending Emails
               </CardTitle>
               <CardDescription>
-                {(() => {
-                  const defaultEmail = emails?.find((e: any) => e.is_default);
-                  if (defaultEmail) {
-                    return (
-                      <>
-                        Default: <span className="font-medium text-foreground">{defaultEmail.display_name ? `${defaultEmail.display_name} <${defaultEmail.email}>` : defaultEmail.email}</span>
-                      </>
-                    );
-                  }
-                  return emails?.length ? "No default email set — select one below" : "Add email addresses for outreach";
-                })()}
+                {emails?.length || 0} / {organization?.plan_email_address_limit ?? 2} sending emails
               </CardDescription>
             </div>
             <Dialog open={showEmailDialog} onOpenChange={setShowEmailDialog}>
