@@ -32,7 +32,7 @@ const navItems = [
   { title: "Add Customers", url: "/customers", icon: UserPlus },
   { title: "Pipeline", url: "/pipeline", icon: BarChart3 },
   { title: "Inbox", url: "/inbox", icon: Inbox },
-  { title: "Insights", url: "/insights", icon: LineChart },
+  // { title: "Insights", url: "/insights", icon: LineChart },
   // { title: "Campaigns", url: "/agent", icon: Rocket },
 ];
 
