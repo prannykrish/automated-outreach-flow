@@ -22,6 +22,7 @@ export function OnboardingFloatingWidget() {
     steps,
     completedSteps,
     isLoading,
+    isDismissed,
     isSuperAdmin,
     skipTutorial,
   } = useOnboardingContext();
@@ -61,8 +62,8 @@ export function OnboardingFloatingWidget() {
 
   const allDone = completedSteps.length === steps.length;
 
-  // Hide for super admins, while loading, or if tutorial was skipped/fully completed
-  if (isLoading || isSuperAdmin || allDone) return null;
+  // Hide for super admins, while loading, if dismissed/skipped, or if fully completed
+  if (isLoading || isSuperAdmin || isDismissed || allDone) return null;
 
   const doneCount = completedSteps.filter((id) => steps.some((s) => s.id === id)).length;
   const totalSteps = steps.length;

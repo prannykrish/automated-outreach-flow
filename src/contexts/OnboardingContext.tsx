@@ -22,7 +22,6 @@ const ADMIN_STEPS: OnboardingStep[] = [
   { id: "view_pipeline", label: "Explore the pipeline", description: "See how prospects move through your outreach stages", href: "/pipeline", required: false },
   { id: "view_inbox", label: "Check your inbox", description: "See replies from prospects in one unified inbox", href: "/inbox", required: false },
   { id: "campaign_agent", label: "Run a campaign", description: "Use the AI agent to find prospects and send targeted outreach", href: null, required: false },
-  { id: "view_insights", label: "Check insights", description: "Track email open rates, replies, and engagement", href: "/insights", required: false },
   { id: "invite_member", label: "Invite a team member", description: "Add your colleagues to collaborate on outreach", href: "/organization#members", required: false },
 ];
 
@@ -32,13 +31,11 @@ const MEMBER_STEPS: OnboardingStep[] = [
   { id: "view_templates", label: "Browse templates", description: "Explore email templates your team has created", href: "/templates", required: false },
   { id: "create_template", label: "Create a template", description: "Write your first outreach email template", href: "/templates", required: false },
   { id: "campaign_agent", label: "Run a campaign", description: "Use the AI agent to find prospects and send targeted outreach", href: null, required: false },
-  { id: "view_insights", label: "Check insights", description: "Track email open rates, replies, and engagement", href: "/insights", required: false },
 ];
 
 const PAGE_TO_STEP: Record<string, string> = {
   "/pipeline": "view_pipeline",
   "/inbox": "view_inbox",
-  "/insights": "view_insights",
   "/templates": "view_templates",
 };
 
