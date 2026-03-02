@@ -213,10 +213,11 @@ export default function Pipeline() {
 
   const deleteCustomerMutation = useMutation({
     mutationFn: async (id: string) => {
-      // Delete related records first (foreign key constraints)
+      // Delete related scheduled sends
       await supabase.from("scheduled_sends").delete().eq("customer_id", id);
-      await supabase.from("inbound_emails").delete().eq("customer_id", id);
-      // Email logs are preserved for historic stats (customer_id set to NULL via FK ON DELETE SET NULL)
+      // Unlink inbound emails (keep them in inbox, just remove the customer association)
+      await supabase.from("inbound_emails").update({ customer_id: null }).eq("customer_id", id);
+      // Delete the customer
       const { error } = await supabase.from("customers").delete().eq("id", id);
       if (error) throw error;
     },
