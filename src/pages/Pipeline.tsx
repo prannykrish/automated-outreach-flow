@@ -65,6 +65,7 @@ export default function Pipeline() {
       return (data || []).filter((c: any) => c.email && (c.first_name || c.last_name)) as any;
     },
     enabled: !!organizationId,
+    refetchInterval: 10000,
   });
 
   // Fetch latest email event per customer for status display
@@ -86,6 +87,7 @@ export default function Pipeline() {
       return map;
     },
     enabled: !!organizationId,
+    refetchInterval: 10000,
   });
 
   // Fetch next scheduled sends
@@ -107,6 +109,7 @@ export default function Pipeline() {
       return map;
     },
     enabled: !!organizationId,
+    refetchInterval: 10000,
   });
 
   // Get email logs for selected customer (sent emails)
@@ -217,6 +220,8 @@ export default function Pipeline() {
       await supabase.from("scheduled_sends").delete().eq("customer_id", id);
       // Unlink inbound emails (keep them in inbox, just remove the customer association)
       await supabase.from("inbound_emails").update({ customer_id: null }).eq("customer_id", id);
+      // Unlink reply reminders (table not in generated types yet)
+      await (supabase as any).from("reply_reminders").update({ customer_id: null }).eq("customer_id", id);
       // Delete the customer
       const { error } = await supabase.from("customers").delete().eq("id", id);
       if (error) throw error;
@@ -373,7 +378,7 @@ export default function Pipeline() {
     emailLogs?.forEach((log: any) => {
       items.push({
         id: `log-${log.id}`,
-        type: log.status === "sent" ? "sent" : "failed",
+        type: log.status === "failed" ? "failed" : "sent",
         date: new Date(log.sent_at || log.created_at),
         templateName: log.email_templates?.name || "Email",
         subject: log.email_templates?.subject,
@@ -735,7 +740,7 @@ export default function Pipeline() {
                                     : "border-green-300 text-green-700 dark:border-green-600 dark:text-green-400"
                                 }
                               >
-                                {item.type === "scheduled" ? "Scheduled" : item.status}
+                                {item.type === "scheduled" ? "Scheduled" : item.status === "delivered" ? "delivered" : item.status}
                               </Badge>
                             </div>
 

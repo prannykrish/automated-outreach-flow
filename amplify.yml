@@ -7,7 +7,6 @@ frontend:
     build:
       commands:
         - printenv | grep '^VITE_' > .env || true
-        - cat .env
         - npm run build
   artifacts:
     baseDirectory: dist
