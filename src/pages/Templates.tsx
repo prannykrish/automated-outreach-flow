@@ -15,6 +15,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Plus, Edit, Trash2, Copy, Eye, Folder, FolderOpen, MoreHorizontal, ChevronDown, Tags } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
+import { useOnboardingContext } from "@/contexts/OnboardingContext";
 
 const STAGES = [
   { value: "initial", label: "Initial Outreach" },
@@ -68,6 +69,7 @@ export default function Templates() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const { user, organizationId } = useAuth();
+  const { completeStep } = useOnboardingContext();
 
   const { data: templates, isLoading } = useQuery({
     queryKey: ["templates", organizationId ?? "none"],
@@ -128,6 +130,7 @@ export default function Templates() {
       setIsOpen(false);
       resetForm();
       toast({ title: "Template created successfully" });
+      completeStep("create_template");
     },
     onError: (error) => {
       toast({ title: "Error creating template", description: error.message, variant: "destructive" });

@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { CreditCard, Mail, Clock, CheckCircle, AlertTriangle, Loader2, Globe, Users } from "lucide-react";
+import { CreditCard, Mail, Clock, CheckCircle, AlertTriangle, Loader2, Globe, Users, Target } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -16,7 +16,7 @@ const GROWTH_PRICE_ID = import.meta.env.VITE_STRIPE_GROWTH_PRICE_ID;
 const planDetails: Record<string, { name: string; price: string }> = {
   trial: { name: "Free Trial", price: "Free" },
   starter: { name: "Starter", price: "$19/mo" },
-  growth: { name: "Growth", price: "$49/mo" },
+  growth: { name: "Plus", price: "$49/mo" },
   enterprise: { name: "Enterprise", price: "Custom" },
   canceled: { name: "Canceled", price: "—" },
 };
@@ -68,12 +68,30 @@ export default function Billing() {
       return data;
     },
     enabled: !!organizationId,
+    // After Stripe checkout redirect, poll until the webhook updates the plan
+    refetchInterval:
+      justSubscribed && organizationId
+        ? (query) => {
+            const plan = query.state.data?.plan;
+            // Stop polling once plan is no longer trial (webhook has fired)
+            return plan === "trial" || !plan ? 2000 : false;
+          }
+        : false,
   });
 
   const currentMonth = new Date().toISOString().slice(0, 7);
   const { data: emailUsage } = useQuery({
-    queryKey: ["email-usage", organizationId, currentMonth],
+    queryKey: ["email-usage", organizationId, currentMonth, org?.plan],
     queryFn: async () => {
+      if (org?.plan === "trial") {
+        // Trial: sum ALL months for lifetime cap
+        const { data } = await supabase
+          .from("email_usage")
+          .select("emails_sent")
+          .eq("organization_id", organizationId!);
+        return (data || []).reduce((sum: number, row: any) => sum + (row.emails_sent || 0), 0);
+      }
+      // Paid: current month only
       const { data } = await supabase
         .from("email_usage")
         .select("emails_sent")
@@ -81,6 +99,21 @@ export default function Billing() {
         .eq("month", currentMonth)
         .maybeSingle();
       return data?.emails_sent || 0;
+    },
+    enabled: !!organizationId && !!org,
+  });
+
+  // Campaign usage
+  const { data: campaignUsage } = useQuery({
+    queryKey: ["campaign-usage", organizationId, currentMonth],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("campaign_usage")
+        .select("campaigns_run, prospects_researched")
+        .eq("organization_id", organizationId!)
+        .eq("month", currentMonth)
+        .maybeSingle();
+      return { campaigns_run: data?.campaigns_run || 0, prospects_researched: data?.prospects_researched || 0 };
     },
     enabled: !!organizationId,
   });
@@ -142,7 +175,9 @@ export default function Billing() {
 
   const plan = planDetails[org.plan] || planDetails.trial;
   const emailsSent = emailUsage || 0;
-  const emailLimit = org.plan_email_limit || 1000;
+  const emailLimit = org.plan === "trial"
+    ? (org.trial_email_total_limit || 200)
+    : (org.plan_email_limit || 1000);
 
   const trialEndsAt = org.trial_ends_at ? new Date(org.trial_ends_at) : null;
   const now = new Date();
@@ -212,7 +247,9 @@ export default function Billing() {
               Usage
             </CardTitle>
             <CardDescription>
-              {new Date().toLocaleString("default", { month: "long", year: "numeric" })}
+              {org.plan === "trial"
+                ? "Free trial (200 email lifetime cap)"
+                : new Date().toLocaleString("default", { month: "long", year: "numeric" })}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -221,6 +258,12 @@ export default function Billing() {
               used={emailsSent}
               limit={emailLimit}
               icon={<Mail className="h-3.5 w-3.5 text-muted-foreground" />}
+            />
+            <UsageBar
+              label="Campaign runs"
+              used={campaignUsage?.campaigns_run || 0}
+              limit={org.plan_campaign_limit || 5}
+              icon={<Target className="h-3.5 w-3.5 text-muted-foreground" />}
             />
             <UsageBar
               label="Domains"
@@ -248,7 +291,7 @@ export default function Billing() {
       {!isSubscribed && (
         <div>
           <h2 className="text-lg font-semibold mb-4">Choose a Plan</h2>
-          <div className="grid gap-4 md:grid-cols-3">
+          <div className="grid gap-4 md:grid-cols-2">
             {/* Starter */}
             <Card className={org.plan === "starter" ? "border-primary" : ""}>
               <CardHeader>
@@ -259,6 +302,8 @@ export default function Billing() {
                 <p className="text-3xl font-bold">$19<span className="text-sm font-normal text-muted-foreground">/mo</span></p>
                 <ul className="space-y-2 text-sm text-muted-foreground">
                   <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />1,000 emails / month</li>
+                  <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />5 campaign runs / month</li>
+                  <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />5 prospects per campaign</li>
                   <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />1 domain</li>
                   <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />2 sending emails</li>
                   <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />3 team members</li>
@@ -275,19 +320,21 @@ export default function Billing() {
               </CardContent>
             </Card>
 
-            {/* Growth */}
+            {/* Plus */}
             <Card className="border-primary relative">
               <div className="absolute -top-3 left-1/2 -translate-x-1/2">
                 <Badge className="bg-primary text-primary-foreground">Popular</Badge>
               </div>
               <CardHeader>
-                <CardTitle>Growth</CardTitle>
+                <CardTitle>Plus</CardTitle>
                 <CardDescription>For scaling teams</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <p className="text-3xl font-bold">$49<span className="text-sm font-normal text-muted-foreground">/mo</span></p>
                 <ul className="space-y-2 text-sm text-muted-foreground">
                   <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />5,000 emails / month</li>
+                  <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />20 campaign runs / month</li>
+                  <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />5 prospects per campaign</li>
                   <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />3 domains</li>
                   <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />5 sending emails</li>
                   <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />10 team members</li>
@@ -303,7 +350,7 @@ export default function Billing() {
               </CardContent>
             </Card>
 
-            {/* Enterprise */}
+            {/* Enterprise — commented out for now
             <Card>
               <CardHeader>
                 <CardTitle>Enterprise</CardTitle>
@@ -313,6 +360,7 @@ export default function Billing() {
                 <p className="text-3xl font-bold">Custom</p>
                 <ul className="space-y-2 text-sm text-muted-foreground">
                   <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />Unlimited emails</li>
+                  <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />Unlimited campaign runs</li>
                   <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />Custom domains</li>
                   <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />Unlimited members</li>
                   <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500" />Dedicated support</li>
@@ -322,6 +370,7 @@ export default function Billing() {
                 </Button>
               </CardContent>
             </Card>
+            */}
           </div>
         </div>
       )}
@@ -332,14 +381,14 @@ export default function Billing() {
           <CardContent className="flex items-center justify-between py-4">
             <div>
               <p className="font-medium">Need more capacity?</p>
-              <p className="text-sm text-muted-foreground">Upgrade to Growth for 5,000 emails, 3 domains, and 10 members.</p>
+              <p className="text-sm text-muted-foreground">Upgrade to Plus for 5,000 emails, 20 campaign runs, 3 domains, and 10 members.</p>
             </div>
             <Button
               disabled={loadingPlan === GROWTH_PRICE_ID}
               onClick={() => handleSubscribe(GROWTH_PRICE_ID)}
             >
               {loadingPlan === GROWTH_PRICE_ID && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              Upgrade to Growth
+              Upgrade to Plus
             </Button>
           </CardContent>
         </Card>

@@ -12,9 +12,11 @@ import { Badge } from "@/components/ui/badge";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Plus, Edit, Trash2, GitBranch, ArrowDown, Clock, Mail } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { useOnboardingContext } from "@/contexts/OnboardingContext";
 
 export default function Sequences() {
   const { user, organizationId: orgId } = useAuth();
+  const { completeStep } = useOnboardingContext();
   const [isOpen, setIsOpen] = useState(false);
   const [editingSequence, setEditingSequence] = useState<any>(null);
   const [selectedSequence, setSelectedSequence] = useState<any>(null);
@@ -123,6 +125,7 @@ export default function Sequences() {
       setIsOpen(false);
       setFormData({ name: "", description: "", organization_email_id: "" });
       toast({ title: "Sequence created successfully" });
+      completeStep("create_sequence");
     },
     onError: (error) => {
       toast({ title: "Error creating sequence", description: error.message, variant: "destructive" });
@@ -523,8 +526,7 @@ export default function Sequences() {
                     <div>
                       <label className="text-xs text-muted-foreground">Delay (Days)</label>
                       <Input
-                        type="number"
-                        min={0}
+                        inputMode="numeric"
                         value={stepForm.delay_days}
                         onChange={(e) => setStepForm({ ...stepForm, delay_days: parseInt(e.target.value) || 0 })}
                       />
@@ -532,11 +534,9 @@ export default function Sequences() {
                     <div>
                       <label className="text-xs text-muted-foreground">Delay (Hours)</label>
                       <Input
-                        type="number"
-                        min={0}
-                        max={23}
+                        inputMode="numeric"
                         value={stepForm.delay_hours}
-                        onChange={(e) => setStepForm({ ...stepForm, delay_hours: parseInt(e.target.value) || 0 })}
+                        onChange={(e) => setStepForm({ ...stepForm, delay_hours: Math.min(23, parseInt(e.target.value) || 0) })}
                       />
                     </div>
                   </div>

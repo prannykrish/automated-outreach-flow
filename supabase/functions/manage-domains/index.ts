@@ -17,6 +17,15 @@ interface ManageDomainsRequest {
   organization_id: string;
 }
 
+// Status priority: higher number = more definitive. Never downgrade.
+const STATUS_PRIORITY: Record<string, number> = {
+  not_started: 0,
+  pending: 1,
+  temporary_failure: 2,
+  failed: 2,
+  verified: 10,
+};
+
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -53,6 +62,200 @@ serve(async (req: Request) => {
       );
     }
 
+    // Helper: enable receiving capability on a Resend domain via PATCH API
+    const enableReceiving = async (resendDomainId: string): Promise<boolean> => {
+      try {
+        console.log("Enabling receiving for Resend domain:", resendDomainId);
+        const res = await fetch(`https://api.resend.com/domains/${resendDomainId}`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${RESEND_API_KEY}`,
+          },
+          body: JSON.stringify({
+            capabilities: {
+              sending: "enabled",
+              receiving: "enabled",
+            },
+          }),
+        });
+        if (!res.ok) {
+          const errData = await res.json();
+          console.error("Failed to enable receiving:", res.status, errData);
+          return false;
+        }
+        console.log("Receiving enabled successfully for domain:", resendDomainId);
+        return true;
+      } catch (err) {
+        console.error("Error enabling receiving:", err);
+        return false;
+      }
+    };
+
+    // Helper: check if a value is a receiving MX record
+    const isReceivingMxValue = (value: string): boolean => {
+      const v = (value || "").toLowerCase();
+      return v.includes("inbound.resend.dev") || v.includes("inbound-smtp");
+    };
+
+    // Helper: create a unique key for a DNS record (for matching across syncs)
+    const recordKey = (r: any): string => {
+      const type = r.type || r.record || "";
+      const name = r.name || "@";
+      return `${type}_${name}`;
+    };
+
+    // Helper: normalize records from Resend
+    // - MX priority baked into value
+    // - Blank/empty name defaults to "@"
+    // - Preserves Resend's actual status (verified, pending, not_started, failed)
+    const normalizeRecords = (records: any[]): any[] => {
+      if (!records || !Array.isArray(records)) return [];
+      return records.map((r: any) => {
+        const normalized = { ...r };
+        if (!normalized.name || normalized.name.trim() === "") {
+          normalized.name = "@";
+        }
+        // Keep Resend's status as-is — do NOT convert pending to not_started
+        if (!normalized.status) {
+          normalized.status = "not_started";
+        }
+        if ((r.type === "MX" || r.record === "MX") && r.priority !== undefined) {
+          const valAlreadyHasPriority = /^\d+\s/.test(r.value || "");
+          if (!valAlreadyHasPriority) {
+            normalized.value = `${r.priority} ${r.value}`;
+          }
+          delete normalized.priority;
+        }
+        return normalized;
+      });
+    };
+
+    // Helper: ensure a receiving MX record exists in the DNS records list.
+    const withMxRecord = (records: any[], domainName: string, fallbackStatus = "not_started") => {
+      const normalized = normalizeRecords(records);
+      const existingIdx = normalized.findIndex((r: any) =>
+        (r.type === "MX" || r.record === "MX") && isReceivingMxValue(r.value || "")
+      );
+      if (existingIdx >= 0) return normalized;
+      return [
+        ...normalized,
+        {
+          record: "MX",
+          type: "MX",
+          name: "@",
+          value: "10 inbound.resend.dev",
+          status: fallbackStatus,
+        },
+      ];
+    };
+
+    // Helper: merge new records from Resend with existing DB records.
+    // CRITICAL: never downgrade a verified record. Only move forward.
+    const mergeRecords = (existingRecords: any[], resendRecords: any[]): any[] => {
+      // Build a map of existing record statuses
+      const existingMap: Record<string, string> = {};
+      (existingRecords || []).forEach((r: any) => {
+        existingMap[recordKey(r)] = r.status || "not_started";
+      });
+
+      return resendRecords.map((r: any) => {
+        const key = recordKey(r);
+        const existingStatus = existingMap[key];
+        const newStatus = r.status || "not_started";
+
+        // If existing status is more definitive, keep it
+        if (existingStatus) {
+          const existingPriority = STATUS_PRIORITY[existingStatus] ?? 0;
+          const newPriority = STATUS_PRIORITY[newStatus] ?? 0;
+
+          // Never downgrade from verified
+          if (existingStatus === "verified" && newStatus !== "verified") {
+            console.log(`Record ${key}: keeping verified (Resend returned ${newStatus})`);
+            return { ...r, status: "verified" };
+          }
+
+          // For non-verified states, allow Resend to update (it might go from pending→verified or pending→failed)
+          // But don't go from failed back to not_started
+          if (existingPriority > newPriority && existingStatus !== "failed") {
+            return { ...r, status: existingStatus };
+          }
+        }
+
+        return r;
+      });
+    };
+
+    // Helper: fetch domain status from Resend, merge with DB state, and update DB.
+    // Never regresses verified records.
+    const syncDomainFromResend = async (domainRecord: any) => {
+      const resendId = domainRecord.resend_domain_id;
+      console.log(`Syncing domain ${domainRecord.domain} (resend_id: ${resendId})`);
+
+      const statusResponse = await fetch(`https://api.resend.com/domains/${resendId}`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${RESEND_API_KEY}` },
+      });
+
+      if (!statusResponse.ok) {
+        const errText = await statusResponse.text();
+        console.error(`Resend GET domain error for ${resendId}:`, errText);
+        return {
+          domain: domainRecord,
+          status: domainRecord.status,
+          verified: domainRecord.verified,
+          dns_records: domainRecord.dns_records,
+        };
+      }
+
+      const statusData = await statusResponse.json();
+      console.log(`Resend status for ${domainRecord.domain}: ${statusData.status}, records:`,
+        JSON.stringify(statusData.records?.map((r: any) => ({ type: r.type || r.record, name: r.name, status: r.status }))));
+
+      // Normalize new records and ensure MX is present
+      const resendRecords = withMxRecord(statusData.records, domainRecord.domain);
+
+      // Merge with existing DB records — never downgrade verified
+      const existingRecords = domainRecord.dns_records || [];
+      const mergedRecords = mergeRecords(existingRecords, resendRecords);
+
+      // Domain is verified only when ALL records are verified
+      const allVerified = mergedRecords.length > 0 && mergedRecords.every((r: any) => r.status === "verified");
+
+      // Determine overall status
+      let overallStatus = statusData.status;
+      if (allVerified) overallStatus = "verified";
+
+      const updateData: any = {
+        status: overallStatus,
+        dns_records: mergedRecords,
+        verified: allVerified,
+      };
+
+      if (allVerified && !domainRecord.verified_at) {
+        updateData.verified_at = new Date().toISOString();
+      }
+
+      const { data: updatedDomain, error: updateError } = await supabase
+        .from("organization_domains")
+        .update(updateData)
+        .eq("id", domainRecord.id)
+        .select()
+        .single();
+
+      if (updateError) {
+        console.error("DB update error:", updateError);
+      }
+
+      const result = updatedDomain || { ...domainRecord, ...updateData };
+      return {
+        domain: result,
+        status: overallStatus,
+        verified: allVerified,
+        dns_records: mergedRecords,
+      };
+    };
+
     // ADD DOMAIN
     if (action === "add") {
       if (!domain) {
@@ -88,7 +291,6 @@ serve(async (req: Request) => {
       if (!resendResponse.ok) {
         // Handle domain already registered in Resend – look it up and sync
         if (resendResponse.status === 409) {
-          // Fetch all domains from Resend and find the matching one
           const listRes = await fetch("https://api.resend.com/domains", {
             headers: { Authorization: `Bearer ${RESEND_API_KEY}` },
           });
@@ -107,15 +309,14 @@ serve(async (req: Request) => {
             );
           }
 
-          // Get full domain details (includes DNS records)
+          await enableReceiving(existing.id);
+          await new Promise((r) => setTimeout(r, 2000));
+
           const detailRes = await fetch(`https://api.resend.com/domains/${existing.id}`, {
             headers: { Authorization: `Bearer ${RESEND_API_KEY}` },
           });
           const detailData = await detailRes.json();
 
-          const isVerified = detailData.status === "verified";
-
-          // Check if domain already exists in our DB for this org
           const { data: existingRow } = await supabase
             .from("organization_domains")
             .select("*")
@@ -123,15 +324,21 @@ serve(async (req: Request) => {
             .eq("domain", cleanDomain)
             .maybeSingle();
 
+          const syncedRecords = withMxRecord(detailData.records, cleanDomain);
+          const allRecordsVerified = syncedRecords?.length > 0 && syncedRecords.every((r: any) => r.status === "verified");
+
           if (existingRow) {
-            // Update existing row with latest Resend status
+            // Merge with existing DB records to protect verified state
+            const mergedRecords = mergeRecords(existingRow.dns_records || [], syncedRecords);
+            const allMergedVerified = mergedRecords.length > 0 && mergedRecords.every((r: any) => r.status === "verified");
+
             const updatePayload: any = {
               resend_domain_id: existing.id,
-              dns_records: detailData.records || existingRow.dns_records,
-              status: detailData.status || existingRow.status,
-              verified: isVerified,
+              dns_records: mergedRecords,
+              status: allMergedVerified ? "verified" : (detailData.status || existingRow.status),
+              verified: allMergedVerified,
             };
-            if (isVerified && !existingRow.verified_at) {
+            if (allMergedVerified && !existingRow.verified_at) {
               updatePayload.verified_at = new Date().toISOString();
             }
 
@@ -142,12 +349,21 @@ serve(async (req: Request) => {
               .select()
               .single();
 
+            // Auto-trigger verification if not yet verified
+            if (!allMergedVerified) {
+              fetch(`https://api.resend.com/domains/${existing.id}/verify`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${RESEND_API_KEY}` },
+              }).catch(() => {});
+            }
+
             return new Response(
               JSON.stringify({
                 success: true,
                 domain: updatedDomain || existingRow,
-                dns_records: detailData.records,
+                dns_records: mergedRecords,
                 synced: true,
+                auto_verifying: !allMergedVerified,
               }),
               { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
             );
@@ -160,10 +376,10 @@ serve(async (req: Request) => {
               organization_id,
               domain: cleanDomain,
               resend_domain_id: existing.id,
-              dns_records: detailData.records,
-              status: detailData.status || "pending",
-              verified: isVerified,
-              verified_at: isVerified ? new Date().toISOString() : null,
+              dns_records: syncedRecords,
+              status: allRecordsVerified ? "verified" : (detailData.status || "pending"),
+              verified: allRecordsVerified,
+              verified_at: allRecordsVerified ? new Date().toISOString() : null,
             })
             .select()
             .single();
@@ -175,12 +391,21 @@ serve(async (req: Request) => {
             );
           }
 
+          // Auto-trigger verification if not yet verified
+          if (!allRecordsVerified) {
+            fetch(`https://api.resend.com/domains/${existing.id}/verify`, {
+              method: "POST",
+              headers: { Authorization: `Bearer ${RESEND_API_KEY}` },
+            }).catch(() => {});
+          }
+
           return new Response(
             JSON.stringify({
               success: true,
               domain: insertedDomain,
-              dns_records: detailData.records,
+              dns_records: syncedRecords,
               synced: true,
+              auto_verifying: !allRecordsVerified,
             }),
             { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
@@ -196,15 +421,25 @@ serve(async (req: Request) => {
         );
       }
 
-      // Insert into database
+      // New domain — enable receiving
+      await enableReceiving(resendData.id);
+      await new Promise((r) => setTimeout(r, 2000));
+
+      const detailRes = await fetch(`https://api.resend.com/domains/${resendData.id}`, {
+        headers: { Authorization: `Bearer ${RESEND_API_KEY}` },
+      });
+      const detailData = detailRes.ok ? await detailRes.json() : null;
+      const latestRecords = detailData?.records || resendData.records;
+      const allRecords = withMxRecord(latestRecords, cleanDomain);
+
       const { data: insertedDomain, error: insertError } = await supabase
         .from("organization_domains")
         .insert({
           organization_id,
           domain: cleanDomain,
           resend_domain_id: resendData.id,
-          dns_records: resendData.records,
-          status: resendData.status || "pending",
+          dns_records: allRecords,
+          status: detailData?.status || resendData.status || "not_started",
           verified: false,
         })
         .select()
@@ -212,7 +447,6 @@ serve(async (req: Request) => {
 
       if (insertError) {
         console.error("DB insert error:", insertError);
-        // Try to clean up the domain from Resend
         await fetch(`https://api.resend.com/domains/${resendData.id}`, {
           method: "DELETE",
           headers: { Authorization: `Bearer ${RESEND_API_KEY}` },
@@ -224,62 +458,24 @@ serve(async (req: Request) => {
         );
       }
 
+      // Auto-trigger verification immediately
+      fetch(`https://api.resend.com/domains/${resendData.id}/verify`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${RESEND_API_KEY}` },
+      }).catch(() => {});
+
       return new Response(
         JSON.stringify({
           success: true,
           domain: insertedDomain,
-          dns_records: resendData.records,
+          dns_records: allRecords,
+          auto_verifying: true,
         }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Helper: fetch domain status from Resend and update our DB
-    const syncDomainFromResend = async (domainRecord: any) => {
-      const resendId = domainRecord.resend_domain_id;
-      const statusResponse = await fetch(`https://api.resend.com/domains/${resendId}`, {
-        method: "GET",
-        headers: { Authorization: `Bearer ${RESEND_API_KEY}` },
-      });
-
-      if (!statusResponse.ok) {
-        const errData = await statusResponse.json();
-        console.error("Resend GET domain error:", errData);
-        return { domain: domainRecord, status: domainRecord.status, verified: domainRecord.verified, dns_records: domainRecord.dns_records };
-      }
-
-      const statusData = await statusResponse.json();
-      const isVerified = statusData.status === "verified";
-      const updateData: any = {
-        status: statusData.status,
-        dns_records: statusData.records,
-        verified: isVerified,
-      };
-
-      if (isVerified && !domainRecord.verified_at) {
-        updateData.verified_at = new Date().toISOString();
-      }
-
-      const { data: updatedDomain, error: updateError } = await supabase
-        .from("organization_domains")
-        .update(updateData)
-        .eq("id", domainRecord.id)
-        .select()
-        .single();
-
-      if (updateError) {
-        console.error("DB update error:", updateError);
-      }
-
-      return {
-        domain: updatedDomain || { ...domainRecord, ...updateData },
-        status: statusData.status,
-        verified: isVerified,
-        dns_records: statusData.records,
-      };
-    };
-
-    // VERIFY DOMAIN
+    // VERIFY DOMAIN — triggers Resend verification and does one sync
     if (action === "verify") {
       if (!domain_id) {
         return new Response(
@@ -288,7 +484,6 @@ serve(async (req: Request) => {
         );
       }
 
-      // Get domain from database
       const { data: domainRecord, error: fetchError } = await supabase
         .from("organization_domains")
         .select("*")
@@ -310,6 +505,9 @@ serve(async (req: Request) => {
         );
       }
 
+      // Ensure receiving is enabled
+      await enableReceiving(domainRecord.resend_domain_id);
+
       // Trigger verification in Resend
       const verifyRes = await fetch(`https://api.resend.com/domains/${domainRecord.resend_domain_id}/verify`, {
         method: "POST",
@@ -317,16 +515,21 @@ serve(async (req: Request) => {
       });
       console.log("Resend verify POST status:", verifyRes.status);
 
-      // Wait 2 seconds for Resend to process, then check status
-      await new Promise((r) => setTimeout(r, 2000));
+      // Wait a moment for Resend to process, then sync once
+      await new Promise((r) => setTimeout(r, 3000));
+      const result = await syncDomainFromResend(domainRecord);
 
-      // Get status — retry once after 3s if not yet verified
-      let result = await syncDomainFromResend(domainRecord);
-
+      // If not yet verified, do one more check after another 3s
       if (!result.verified) {
-        console.log("Not verified yet, retrying after 3s...");
         await new Promise((r) => setTimeout(r, 3000));
-        result = await syncDomainFromResend(domainRecord);
+        const result2 = await syncDomainFromResend({
+          ...domainRecord,
+          dns_records: result.dns_records, // pass merged records to protect verified state
+        });
+        return new Response(
+          JSON.stringify({ success: true, ...result2 }),
+          { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
       }
 
       return new Response(
@@ -335,9 +538,9 @@ serve(async (req: Request) => {
       );
     }
 
-    // SYNC STATUS — lightweight check for auto-polling (no verify POST)
+    // SYNC STATUS — lightweight polling check. Also re-triggers Resend verify
+    // periodically so DNS checks actually happen (not just reading cached state).
     if (action === "sync-status") {
-      // Sync all unverified domains for this org
       const { data: unverifiedDomains } = await supabase
         .from("organization_domains")
         .select("*")
@@ -354,6 +557,19 @@ serve(async (req: Request) => {
 
       const results = [];
       for (const dr of unverifiedDomains) {
+        // Re-trigger Resend verification so it actually checks DNS
+        // (without this, GET just returns cached state)
+        try {
+          await fetch(`https://api.resend.com/domains/${dr.resend_domain_id}/verify`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${RESEND_API_KEY}` },
+          });
+        } catch (e) {
+          console.error("Failed to trigger verify for", dr.domain, e);
+        }
+
+        // Wait a moment, then sync
+        await new Promise((r) => setTimeout(r, 2000));
         const result = await syncDomainFromResend(dr);
         results.push(result);
       }
@@ -373,7 +589,6 @@ serve(async (req: Request) => {
         );
       }
 
-      // Get domain from database
       const { data: domainRecord, error: fetchError } = await supabase
         .from("organization_domains")
         .select("*")
@@ -388,20 +603,17 @@ serve(async (req: Request) => {
         );
       }
 
-      // Delete from Resend if we have a resend_domain_id
       if (domainRecord.resend_domain_id) {
         const deleteResponse = await fetch(`https://api.resend.com/domains/${domainRecord.resend_domain_id}`, {
           method: "DELETE",
           headers: { Authorization: `Bearer ${RESEND_API_KEY}` },
         });
 
-        // Continue even if Resend deletion fails (domain might already be deleted)
         if (!deleteResponse.ok && deleteResponse.status !== 404) {
           console.warn("Failed to delete domain from Resend:", await deleteResponse.text());
         }
       }
 
-      // Delete from database
       const { error: deleteError } = await supabase
         .from("organization_domains")
         .delete()

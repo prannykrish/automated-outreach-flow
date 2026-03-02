@@ -61,6 +61,24 @@ export default function AuthPage() {
       setLoading(false);
       return;
     }
+    if (mode === "signup") {
+      const domain = email.split("@")[1]?.toLowerCase();
+      const disposable = [
+        "guerrillamail.com","mailinator.com","tempmail.com","10minutemail.com",
+        "dispostable.com","yopmail.com","throwaway.email","sharklasers.com",
+        "guerrillamail.info","grr.la","guerrillamailblock.com","tempail.com",
+        "fakeinbox.com","mailnesia.com","maildrop.cc","discard.email",
+        "trashmail.com","trashmail.me","mohmal.com","getnada.com",
+        "temp-mail.org","emailondeck.com","guerrillamail.net","guerrillamail.de",
+        "mailcatch.com","throwam.com","tmail.ws","tmpmail.net",
+        "bupmail.com","tempmailo.com",
+      ];
+      if (disposable.includes(domain)) {
+        setError("Please use a non-disposable email address.");
+        setLoading(false);
+        return;
+      }
+    }
     if (!password) {
       setError("Please enter your password");
       setLoading(false);
@@ -173,6 +191,12 @@ export default function AuthPage() {
             </div>
           </CardContent>
         </Card>
+      </div>
+
+      {/* Logo */}
+      <div className="fixed bottom-4 right-4">
+        <img src="/mora-logo-black.png" alt="Mora logo" className="h-8 w-8 object-contain block dark:hidden opacity-50" />
+        <img src="/mora-logo-white.png" alt="Mora logo" className="h-8 w-8 object-contain hidden dark:block opacity-50" />
       </div>
     </div>
   );

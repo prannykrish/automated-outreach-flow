@@ -108,15 +108,20 @@ serve(async (req: Request) => {
       // Block sends for orgs that failed billing check
       if (scheduled.organization_id && blockedOrgs.has(scheduled.organization_id)) {
         await supabase.from("scheduled_sends").update({ status: "failed" }).eq("id", scheduled.id);
+        const blockedTemplate = scheduled.sequence_steps?.email_templates;
+        const blockedOrgEmail = scheduled.sequence_steps?.email_sequences?.organization_emails;
         await supabase.from("email_logs").insert({
           customer_id: scheduled.customers?.id,
           customer_email: scheduled.customers?.email,
           customer_name: [scheduled.customers?.first_name, scheduled.customers?.last_name].filter(Boolean).join(" "),
-          template_id: scheduled.sequence_steps?.email_templates?.id,
+          template_id: blockedTemplate?.id,
           status: "failed",
           error_message: "Billing limit reached or subscription inactive",
           user_id: scheduled.user_id || null,
           organization_id: scheduled.organization_id || null,
+          subject: blockedTemplate?.subject ? replacePlaceholders(blockedTemplate.subject, scheduled.customers || {}) : null,
+          body: blockedTemplate?.body ? replacePlaceholders(blockedTemplate.body, scheduled.customers || {}).replace(/\n/g, "<br>") : null,
+          sender_email: blockedOrgEmail?.email || null,
         });
         results.push({ email: scheduled.customers?.email, status: "blocked", reason: "billing" });
         continue;
@@ -213,6 +218,9 @@ serve(async (req: Request) => {
           resend_id: resendData.id,
           user_id: customer.user_id || null,
           organization_id: customer.organization_id || null,
+          subject: emailSubject,
+          body: body.replace(/\n/g, "<br>"),
+          sender_email: fromAddress,
         });
 
         // Increment email usage counter for billing
@@ -259,6 +267,149 @@ serve(async (req: Request) => {
           error_message: err.message,
           user_id: customer.user_id || null,
           organization_id: customer.organization_id || null,
+          subject: emailSubject,
+          body: body.replace(/\n/g, "<br>"),
+          sender_email: fromAddress,
+        });
+        results.push({ email: customer.email, status: "failed", error: err.message });
+      }
+    }
+
+    // ── Process campaign draft-based scheduled sends (draft_id instead of step_id) ──
+    const { data: campaignSends } = await supabase
+      .from("scheduled_sends")
+      .select("*, customers(*)")
+      .lte("scheduled_for", now)
+      .eq("status", "pending")
+      .not("draft_id", "is", null)
+      .limit(50);
+
+    for (const scheduled of campaignSends || []) {
+      // Skip if org is blocked
+      if (scheduled.organization_id && blockedOrgs.has(scheduled.organization_id)) {
+        await supabase.from("scheduled_sends").update({ status: "failed" }).eq("id", scheduled.id);
+        results.push({ email: scheduled.customers?.email, status: "blocked", reason: "billing" });
+        continue;
+      }
+
+      const customer = scheduled.customers;
+      if (!customer || customer.paused) continue;
+
+      // Fetch the draft content
+      const { data: draft } = await supabase
+        .from("agent_email_drafts")
+        .select("id, subject, body, campaign_id, step_number")
+        .eq("id", scheduled.draft_id)
+        .single();
+
+      if (!draft || !draft.subject || !draft.body) {
+        await supabase.from("scheduled_sends").update({ status: "failed" }).eq("id", scheduled.id);
+        continue;
+      }
+
+      // Get sender email for this org
+      let { data: orgEmailForCampaign } = await supabase
+        .from("organization_emails")
+        .select("email, display_name, reply_to")
+        .eq("organization_id", scheduled.organization_id)
+        .eq("is_default", true)
+        .maybeSingle();
+
+      if (!orgEmailForCampaign) {
+        const { data: fallbackEmail } = await supabase
+          .from("organization_emails")
+          .select("email, display_name, reply_to")
+          .eq("organization_id", scheduled.organization_id)
+          .limit(1)
+          .maybeSingle();
+        orgEmailForCampaign = fallbackEmail;
+      }
+
+      const fromAddr = orgEmailForCampaign?.display_name
+        ? `${orgEmailForCampaign.display_name} <${orgEmailForCampaign.email}>`
+        : orgEmailForCampaign?.email || Deno.env.get("DEFAULT_FROM_EMAIL") || "noreply@example.com";
+
+      // For follow-ups (step 2+), prepend "Re: " to the original subject
+      let emailSubject = draft.subject;
+      if (draft.step_number > 1) {
+        const { data: firstEmail } = await supabase
+          .from("email_logs")
+          .select("subject")
+          .eq("customer_id", customer.id)
+          .eq("campaign_id", draft.campaign_id)
+          .eq("status", "sent")
+          .order("sent_at", { ascending: true })
+          .limit(1)
+          .maybeSingle();
+        if (firstEmail?.subject) {
+          emailSubject = `Re: ${firstEmail.subject.replace(/^Re: /i, "")}`;
+        }
+      }
+
+      try {
+        const htmlBody = draft.body.replace(/\n/g, "<br>");
+        const emailPayload: Record<string, any> = {
+          from: fromAddr,
+          to: customer.email,
+          subject: emailSubject,
+          html: htmlBody,
+          text: draft.body,
+        };
+        if (orgEmailForCampaign?.reply_to) emailPayload.reply_to = orgEmailForCampaign.reply_to;
+
+        const resendRes = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${RESEND_API_KEY}`,
+          },
+          body: JSON.stringify(emailPayload),
+        });
+
+        const resendData = await resendRes.json();
+        if (!resendRes.ok) throw new Error(resendData.message || "Resend API error");
+
+        await supabase.from("scheduled_sends").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", scheduled.id);
+        await supabase.from("agent_email_drafts").update({ status: "sent" }).eq("id", draft.id);
+        await supabase.from("email_logs").insert({
+          customer_id: customer.id,
+          customer_email: customer.email,
+          customer_name: [customer.first_name, customer.last_name].filter(Boolean).join(" "),
+          status: "sent",
+          sent_at: new Date().toISOString(),
+          resend_id: resendData.id,
+          user_id: scheduled.user_id || null,
+          organization_id: scheduled.organization_id,
+          subject: emailSubject,
+          body: htmlBody,
+          sender_email: fromAddr,
+          campaign_id: draft.campaign_id,
+        });
+
+        if (scheduled.organization_id) {
+          await supabase.rpc("increment_email_usage", {
+            org_id: scheduled.organization_id,
+            send_month: currentMonth,
+            count: 1,
+          });
+        }
+
+        results.push({ email: customer.email, status: "sent" });
+      } catch (err: any) {
+        console.error("Campaign send failed:", err.message);
+        await supabase.from("scheduled_sends").update({ status: "failed" }).eq("id", scheduled.id);
+        await supabase.from("agent_email_drafts").update({ status: "failed" }).eq("id", draft.id);
+        await supabase.from("email_logs").insert({
+          customer_id: customer.id,
+          customer_email: customer.email,
+          customer_name: [customer.first_name, customer.last_name].filter(Boolean).join(" "),
+          status: "failed",
+          error_message: err.message,
+          organization_id: scheduled.organization_id,
+          subject: emailSubject,
+          body: draft.body.replace(/\n/g, "<br>"),
+          sender_email: fromAddr,
+          campaign_id: draft.campaign_id,
         });
         results.push({ email: customer.email, status: "failed", error: err.message });
       }

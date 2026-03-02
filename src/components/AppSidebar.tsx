@@ -1,4 +1,5 @@
-import { Mail, GitBranch, UserPlus, BarChart3, LineChart, Settings, LogOut, Building, ShieldCheck, CreditCard, Bot } from "lucide-react";
+import { Mail, GitBranch, UserPlus, BarChart3, LineChart, Settings, LogOut, Building, ShieldCheck, CreditCard, Inbox, Rocket } from "lucide-react";
+
 import Logo from "@/components/Logo";
 import { NavLink } from "@/components/NavLink";
 import { useAuth } from "@/contexts/AuthContext";
@@ -30,14 +31,30 @@ const navItems = [
   { title: "Sequences", url: "/sequences", icon: GitBranch },
   { title: "Add Customers", url: "/customers", icon: UserPlus },
   { title: "Pipeline", url: "/pipeline", icon: BarChart3 },
+  { title: "Inbox", url: "/inbox", icon: Inbox },
   { title: "Insights", url: "/insights", icon: LineChart },
-  { title: "Agent", url: "/agent", icon: Bot },
+  // { title: "Campaigns", url: "/agent", icon: Rocket },
 ];
 
 export function AppSidebar() {
   const { state } = useSidebar();
-  const { user, profile, signOut } = useAuth();
+  const { user, profile, signOut, organizationId } = useAuth();
   const isCollapsed = state === "collapsed";
+
+  // Unread inbox count
+  const { data: unreadCount } = useQuery({
+    queryKey: ["inbox-unread", organizationId],
+    queryFn: async () => {
+      const { count } = await supabase
+        .from("inbound_emails")
+        .select("id", { count: "exact", head: true })
+        .eq("organization_id", organizationId!)
+        .eq("is_read", false);
+      return count || 0;
+    },
+    enabled: !!organizationId,
+    refetchInterval: 30000,
+  });
 
   // Check if user is an admin of their organization
   const { data: membership } = useQuery({
@@ -83,23 +100,17 @@ export function AppSidebar() {
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader className="border-b border-sidebar-border">
-  <div className="flex items-center gap-2 px-2 py-2">
-    <div className="w-8 h-8 flex items-center justify-center">
-      <img
-        src="/mora-logo-black.png"
-        alt="Mora logo"
-        className="h-6 w-auto block dark:hidden"
-      />
-      <img
-        src="/mora-logo-white.png"
-        alt="Mora logo"
-        className="h-6 w-auto hidden dark:block"
-      />
-    </div>
-
-    {!isCollapsed && (
-      <span className="font-semibold text-lg">Mora</span>
-    )}
+  <div className={`flex items-center py-2 h-12 ${isCollapsed ? "px-2 justify-center" : "px-4"}`}>
+    <img
+      src="/mora-logo-black.png"
+      alt="Mora logo"
+      className={`object-contain block dark:hidden transition-all ${isCollapsed ? "h-8 w-8" : "h-10 w-10"}`}
+    />
+    <img
+      src="/mora-logo-white.png"
+      alt="Mora logo"
+      className={`object-contain hidden dark:block transition-all ${isCollapsed ? "h-8 w-8" : "h-10 w-10"}`}
+    />
   </div>
 </SidebarHeader>
 
@@ -118,6 +129,11 @@ export function AppSidebar() {
                     >
                       <item.icon className="h-4 w-4" />
                       <span>{item.title}</span>
+                      {item.title === "Inbox" && !!unreadCount && unreadCount > 0 && (
+                        <span className="ml-auto bg-primary text-primary-foreground text-[10px] font-medium rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1">
+                          {unreadCount > 99 ? "99+" : unreadCount}
+                        </span>
+                      )}
                     </NavLink>
                   </SidebarMenuButton>
                 </SidebarMenuItem>

@@ -17,11 +17,14 @@ import AuthPage from "./pages/Auth";
 import Landing from "./pages/Landing";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { AgentProvider } from "@/contexts/AgentContext";
+import { CampaignAgentProvider } from "@/contexts/CampaignAgentContext";
+import { OnboardingProvider } from "@/contexts/OnboardingContext";
 import { RequireAuth } from "@/components/RequireAuth";
 import SuperAdmin from "@/pages/SuperAdmin";
 import Billing from "./pages/Billing";
 import Onboarding from "./pages/Onboarding";
 import Agent from "./pages/Agent";
+import Inbox from "./pages/Inbox";
 
 function HomeRoute() {
   const { session, loading } = useAuth();
@@ -56,6 +59,8 @@ const App = () => (
         <BrowserRouter>
           <AuthProvider>
             <AgentProvider>
+            <CampaignAgentProvider>
+            <OnboardingProvider>
             <Routes>
               <Route path="/auth" element={<AuthPage />} />
               <Route path="/onboarding" element={<OnboardingRoute />} />
@@ -101,6 +106,17 @@ const App = () => (
                   <RequireAuth>
                     <Layout>
                       <Pipeline />
+                    </Layout>
+                  </RequireAuth>
+                }
+              />
+
+              <Route
+                path="/inbox"
+                element={
+                  <RequireAuth>
+                    <Layout>
+                      <Inbox />
                     </Layout>
                   </RequireAuth>
                 }
@@ -174,6 +190,8 @@ const App = () => (
 
               <Route path="*" element={<NotFound />} />
             </Routes>
+            </OnboardingProvider>
+            </CampaignAgentProvider>
             </AgentProvider>
           </AuthProvider>
         </BrowserRouter>

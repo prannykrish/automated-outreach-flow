@@ -64,17 +64,23 @@ export default function SuperAdmin() {
   const { data: organizations } = useQuery({
     queryKey: ["all-organizations"],
     queryFn: async () => {
+      const currentMonth = new Date().toISOString().slice(0, 7);
       const { data, error } = await supabase
         .from("organizations")
         .select(`
           *,
           organization_members(count),
           organization_domains(count),
-          organization_emails(count)
+          organization_emails(count),
+          email_usage(emails_sent, month)
         `)
         .order("created_at", { ascending: false });
       if (error) throw error;
-      return data;
+      // Attach current month usage to each org
+      return (data || []).map((org: any) => ({
+        ...org,
+        current_month_usage: (org.email_usage || []).find((u: any) => u.month === currentMonth)?.emails_sent || 0,
+      }));
     },
     enabled: isSuperAdmin === true,
   });
@@ -306,7 +312,8 @@ export default function SuperAdmin() {
     const response = await fetch(`${supabaseUrl}/functions/v1/${functionName}`, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${supabaseKey}`,
+        "Authorization": `Bearer ${currentSession.access_token}`,
+        "apikey": supabaseKey,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ ...body, access_token: currentSession.access_token }),
@@ -353,6 +360,33 @@ export default function SuperAdmin() {
     },
     onError: (error) => {
       toast({ title: "Error deleting", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const PLAN_CONFIGS: Record<string, { plan_email_limit: number; plan_domain_limit: number; plan_email_address_limit: number; plan_member_limit: number; plan_campaign_limit: number; billing_status: string }> = {
+    trial: { plan_email_limit: 200, plan_domain_limit: 1, plan_email_address_limit: 2, plan_member_limit: 3, plan_campaign_limit: 5, billing_status: "active" },
+    starter: { plan_email_limit: 1000, plan_domain_limit: 1, plan_email_address_limit: 2, plan_member_limit: 3, plan_campaign_limit: 5, billing_status: "active" },
+    growth: { plan_email_limit: 5000, plan_domain_limit: 3, plan_email_address_limit: 5, plan_member_limit: 10, plan_campaign_limit: 20, billing_status: "active" },
+    enterprise: { plan_email_limit: 99999, plan_domain_limit: 100, plan_email_address_limit: 100, plan_member_limit: 999, plan_campaign_limit: 9999, billing_status: "active" },
+  };
+
+  const setPlanMutation = useMutation({
+    mutationFn: async ({ orgId, plan }: { orgId: string; plan: string }) => {
+      const config = PLAN_CONFIGS[plan];
+      if (!config) throw new Error("Invalid plan");
+      const { error } = await supabase
+        .from("organizations")
+        .update({ plan, ...config })
+        .eq("id", orgId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["all-organizations"] });
+      queryClient.invalidateQueries({ queryKey: ["org-details"] });
+      toast({ title: "Plan updated" });
+    },
+    onError: (error) => {
+      toast({ title: "Error updating plan", description: error.message, variant: "destructive" });
     },
   });
 
@@ -518,6 +552,7 @@ export default function SuperAdmin() {
                     <TableHead>Domains</TableHead>
                     <TableHead>Emails</TableHead>
                     <TableHead>Plan</TableHead>
+                    <TableHead>Usage</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead>Created</TableHead>
                     <TableHead className="w-24">Actions</TableHead>
@@ -551,6 +586,15 @@ export default function SuperAdmin() {
                       </TableCell>
                       <TableCell>
                         <Badge variant="outline" className="capitalize">{org.plan || "trial"}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        {(() => {
+                          const used = org.current_month_usage || 0;
+                          const limit = org.plan_email_limit || 1000;
+                          const pct = limit > 0 ? (used / limit) * 100 : 0;
+                          const color = pct >= 90 ? "text-red-600" : pct >= 75 ? "text-yellow-600" : "text-muted-foreground";
+                          return <span className={`text-sm ${color}`}>{used} / {limit}</span>;
+                        })()}
                       </TableCell>
                       <TableCell>
                         <Badge
@@ -809,6 +853,58 @@ export default function SuperAdmin() {
                 </Card>
               </div>
 
+              {/* Plan & Limits */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="font-semibold flex items-center gap-2">
+                    <CreditCard className="h-4 w-4" />
+                    Plan & Limits
+                  </h3>
+                  <div className="flex items-center gap-2">
+                    <Badge variant={viewingOrg?.plan === "enterprise" ? "default" : "outline"}>
+                      {viewingOrg?.plan || "trial"}
+                    </Badge>
+                    <Select
+                      value={viewingOrg?.plan || "trial"}
+                      onValueChange={(plan) => {
+                        if (viewingOrg?.id) {
+                          setPlanMutation.mutate({ orgId: viewingOrg.id, plan });
+                          setViewingOrg({ ...viewingOrg, plan, ...PLAN_CONFIGS[plan] });
+                        }
+                      }}
+                    >
+                      <SelectTrigger className="w-32 h-8 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="trial">Trial</SelectItem>
+                        <SelectItem value="starter">Starter</SelectItem>
+                        <SelectItem value="growth">Growth</SelectItem>
+                        <SelectItem value="enterprise">Enterprise</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div className="grid grid-cols-4 gap-3 text-sm">
+                  <div className="border rounded-lg p-3">
+                    <p className="text-muted-foreground text-xs mb-1">Emails this month</p>
+                    <p className="font-medium">{viewingOrg?.current_month_usage || 0} / {viewingOrg?.plan_email_limit || 1000}</p>
+                  </div>
+                  <div className="border rounded-lg p-3">
+                    <p className="text-muted-foreground text-xs mb-1">Members</p>
+                    <p className="font-medium">{orgDetails.members?.length || 0} / {viewingOrg?.plan_member_limit || 3}</p>
+                  </div>
+                  <div className="border rounded-lg p-3">
+                    <p className="text-muted-foreground text-xs mb-1">Domains</p>
+                    <p className="font-medium">{orgDetails.domains?.length || 0} / {viewingOrg?.plan_domain_limit || 1}</p>
+                  </div>
+                  <div className="border rounded-lg p-3">
+                    <p className="text-muted-foreground text-xs mb-1">Email addresses</p>
+                    <p className="font-medium">{orgDetails.emails?.length || 0} / {viewingOrg?.plan_email_address_limit || 2}</p>
+                  </div>
+                </div>
+              </div>
+
               {/* Members */}
               <div>
                 <h3 className="font-semibold mb-2 flex items-center gap-2">
@@ -908,7 +1004,7 @@ export default function SuperAdmin() {
                   Sending Emails
                 </h3>
                 {orgDetails.emails?.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No sending emails configured</p>
+                  <p className="text-sm text-muted-foreground">No emails configured</p>
                 ) : (
                   <Table>
                     <TableHeader>

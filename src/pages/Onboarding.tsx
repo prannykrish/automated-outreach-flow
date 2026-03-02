@@ -167,6 +167,9 @@ export default function Onboarding() {
         <div className="text-center">
           <h1 className="text-3xl font-bold">Welcome to Mora</h1>
           <p className="text-muted-foreground mt-2">Get started by setting up your organization</p>
+          <p className="text-sm text-muted-foreground/70 mt-1">
+            If your team already uses Mora, ask them for an invite code. Otherwise, create a new organization to get started.
+          </p>
         </div>
 
         {step === "choose" && (

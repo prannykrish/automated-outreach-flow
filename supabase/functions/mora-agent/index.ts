@@ -121,6 +121,27 @@ const TOOLS = [
     description: "Get all custom merge field placeholders the organization has defined for email personalization.",
     input_schema: { type: "object", properties: {}, required: [] },
   },
+  {
+    name: "get_inbound_emails",
+    description: "Get inbound (received) emails — replies from customers. Includes sender info, subject, body content, and whether it's been read. Use this to help the user understand what customers are saying and draft responses.",
+    input_schema: {
+      type: "object",
+      properties: {
+        customer_id: { type: "string", description: "Filter by customer ID" },
+        limit: { type: "number", description: "Max results (default 20)" },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "get_icp_settings",
+    description: "Get the organization's Ideal Customer Profile (ICP) settings including target roles, target industries, company size/stage, keywords, and messaging preferences. Use this to understand who the user is targeting and tailor your advice accordingly.",
+    input_schema: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+  },
 ];
 
 // Execute a tool call against Supabase
@@ -315,6 +336,29 @@ async function executeTool(toolName: string, toolInput: any, orgId: string) {
         .order("name", { ascending: true });
       return data || [];
     }
+    case "get_inbound_emails": {
+      let query = supabase
+        .from("inbound_emails")
+        .select("id, from_email, from_name, to_email, subject, html, text_body, customer_id, is_read, created_at, in_reply_to_log_id")
+        .eq("organization_id", orgId);
+
+      if (toolInput.customer_id) {
+        query = query.eq("customer_id", toolInput.customer_id);
+      }
+
+      const { data } = await query
+        .order("created_at", { ascending: false })
+        .limit(toolInput.limit || 20);
+      return data || [];
+    }
+    case "get_icp_settings": {
+      const { data } = await supabase
+        .from("company_profiles")
+        .select("company_description, problem_solved, tone, key_message, target_roles, target_industries, company_size, company_stage, icp_keywords, messaging_notes, preferred_sources")
+        .eq("organization_id", orgId)
+        .maybeSingle();
+      return data || { message: "No ICP settings configured yet. The user should set up their ICP in the campaign agent settings." };
+    }
     default:
       return { error: `Unknown tool: ${toolName}` };
   }
@@ -360,7 +404,7 @@ WRONG (never do this):
 - Cold email that actually gets replies: subject lines, openers, CTAs, personalization at scale
 - Human psychology behind why people open, read, and respond to cold outreach
 - The difference between emails that feel like spam vs emails that feel like they came from a real person
-- Founder-led sales — you know the user is probably a founder or early sales hire, not an enterprise SDR team
+- Adaptable to any sales motion — from solo founders to SDR teams to enterprise sales orgs. Check ICP settings to understand who they're targeting.
 - Sequence strategy: when to follow up, how many touches, when to break up, how to re-engage
 - Targeting: how to think about ICP, how to write differently for CEOs vs VPs vs ICs
 - Deliverability basics: what tanks your open rates, domain warming, spam triggers
@@ -388,7 +432,8 @@ WRONG (never do this):
       "/customers": "the add customers page — they may want help with customer targeting or import strategy",
       "/pipeline": "their pipeline page — they may want to understand their outreach progress and conversion rates",
       "/insights": "the insights/analytics page — they may want to understand their email performance metrics",
-      "/agent": "the agent chat page — they're here specifically to chat with you",
+      "/inbox": "their inbox page — they may want help composing replies, summarizing email activity, or understanding engagement",
+      "/agent": "the agent chat page — they're here specifically to chat with you. Check their ICP settings with get_icp_settings to give relevant, targeted advice.",
     };
     const desc = pageDescriptions[contextPage] || `the ${contextPage} page`;
     prompt += `\n\nThe user is currently viewing ${desc}.`;
@@ -524,6 +569,61 @@ serve(async (req: Request) => {
         JSON.stringify({ error: "Missing required fields: messages, organizationId" }),
         { status: 400, headers: corsHeaders }
       );
+    }
+
+    // Check agent message limit based on plan
+    const supabase = createClient(SUPABASE_URL!, SUPABASE_SERVICE_ROLE_KEY!);
+    const { data: org } = await supabase
+      .from("organizations")
+      .select("plan")
+      .eq("id", organizationId)
+      .single();
+
+    const plan = org?.plan || "trial";
+    const AGENT_LIMITS: Record<string, number> = {
+      trial: 25,
+      starter: 25,
+      growth: 200,
+      enterprise: 999999,
+    };
+    const monthlyLimit = AGENT_LIMITS[plan] ?? 25;
+
+    // Count user messages this month for this org
+    const startOfMonth = new Date();
+    startOfMonth.setDate(1);
+    startOfMonth.setHours(0, 0, 0, 0);
+
+    let usedMessages = 0;
+    const { data: convIds } = await supabase
+      .from("agent_conversations")
+      .select("id")
+      .eq("organization_id", organizationId);
+    if (convIds && convIds.length > 0) {
+      const { count } = await supabase
+        .from("agent_messages")
+        .select("*", { count: "exact", head: true })
+        .eq("role", "user")
+        .in("conversation_id", convIds.map((c: any) => c.id))
+        .gte("created_at", startOfMonth.toISOString());
+      usedMessages = count || 0;
+    }
+
+    if (usedMessages >= monthlyLimit) {
+      const upgradeMsg = plan === "growth"
+        ? "You've used all 200 Mora messages this month. They'll reset next month, or upgrade to Enterprise for unlimited."
+        : `You've used all ${monthlyLimit} Mora messages this month. Upgrade to Growth for 200 messages/month.`;
+
+      // Return as a streamed response so the frontend handles it normally
+      const limitStream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: "text", text: upgradeMsg })}\n\n`));
+          controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+          controller.close();
+        },
+      });
+      return new Response(limitStream, {
+        headers: { ...corsHeaders, "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
+      });
     }
 
     const stream = await callClaude(messages, organizationId, contextPage);

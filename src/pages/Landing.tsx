@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { Mail, GitBranch, Users, BarChart3, ArrowRight, Zap, Target, Send, CheckCircle } from "lucide-react";
+import { GitBranch, Users, BarChart3, ArrowRight, Zap, Target, Send, CheckCircle } from "lucide-react";
 
 const features = [
   {
@@ -50,7 +50,8 @@ export default function Landing() {
       <nav className="border-b border-border/50">
         <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Mail className="h-5 w-5" />
+            <img src="/mora-logo-black.png" alt="Mora logo" className="h-8 w-8 object-contain block dark:hidden" />
+            <img src="/mora-logo-white.png" alt="Mora logo" className="h-8 w-8 object-contain hidden dark:block" />
             <span className="text-lg font-semibold">Mora</span>
           </div>
           <div className="flex items-center gap-3">
@@ -70,7 +71,7 @@ export default function Landing() {
       {/* Hero */}
       <section className="max-w-5xl mx-auto px-6 py-24 md:py-32 text-center">
         <h1 className="text-4xl md:text-6xl font-bold tracking-tight">
-          The Email for
+          The Email Platform for
           <br />
           <span className="text-muted-foreground">Founders.</span>
         </h1>
@@ -148,7 +149,7 @@ export default function Landing() {
               Start with a 14-day free trial. No credit card required.
             </p>
           </div>
-          <div className="grid gap-6 md:grid-cols-3 max-w-4xl mx-auto">
+          <div className="grid gap-6 md:grid-cols-2 max-w-3xl mx-auto">
             {/* Starter */}
             <div className="p-6 rounded-xl border border-border/50 bg-card">
               <h3 className="text-lg font-semibold">Starter</h3>
@@ -156,6 +157,7 @@ export default function Landing() {
               <p className="text-3xl font-bold mt-4">$19<span className="text-sm font-normal text-muted-foreground">/mo</span></p>
               <ul className="mt-6 space-y-3 text-sm">
                 <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />1,000 emails / month</li>
+                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />25 Mora AI messages / mo</li>
                 <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />1 domain</li>
                 <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />2 sending emails</li>
                 <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />3 team members</li>
@@ -165,16 +167,17 @@ export default function Landing() {
               </Link>
             </div>
 
-            {/* Growth */}
+            {/* Plus */}
             <div className="p-6 rounded-xl border-2 border-primary bg-card relative">
               <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-primary text-primary-foreground text-xs font-medium px-3 py-1 rounded-full">
                 Popular
               </div>
-              <h3 className="text-lg font-semibold">Growth</h3>
+              <h3 className="text-lg font-semibold">Plus</h3>
               <p className="text-sm text-muted-foreground mt-1">For scaling teams</p>
               <p className="text-3xl font-bold mt-4">$49<span className="text-sm font-normal text-muted-foreground">/mo</span></p>
               <ul className="mt-6 space-y-3 text-sm">
                 <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />5,000 emails / month</li>
+                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />200 Mora AI messages / mo</li>
                 <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />3 domains</li>
                 <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />5 sending emails</li>
                 <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />10 team members</li>
@@ -184,13 +187,14 @@ export default function Landing() {
               </Link>
             </div>
 
-            {/* Enterprise */}
+            {/* Enterprise — commented out for now
             <div className="p-6 rounded-xl border border-border/50 bg-card">
               <h3 className="text-lg font-semibold">Enterprise</h3>
               <p className="text-sm text-muted-foreground mt-1">For large organizations</p>
               <p className="text-3xl font-bold mt-4">Custom</p>
               <ul className="mt-6 space-y-3 text-sm">
                 <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />Unlimited emails</li>
+                <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />Unlimited Mora AI</li>
                 <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />Custom domains</li>
                 <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />Unlimited members</li>
                 <li className="flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-500 shrink-0" />Dedicated support</li>
@@ -199,6 +203,7 @@ export default function Landing() {
                 <a href="mailto:support@mora.app">Contact Us</a>
               </Button>
             </div>
+            */}
           </div>
         </div>
       </section>
@@ -226,7 +231,8 @@ export default function Landing() {
       <footer className="border-t border-border/50">
         <div className="max-w-5xl mx-auto px-6 py-8 flex items-center justify-between text-sm text-muted-foreground">
           <div className="flex items-center gap-2">
-            <Mail className="h-4 w-4" />
+            <img src="/mora-logo-black.png" alt="Mora logo" className="h-6 w-6 object-contain block dark:hidden" />
+            <img src="/mora-logo-white.png" alt="Mora logo" className="h-6 w-6 object-contain hidden dark:block" />
             <span className="font-medium">Mora</span>
           </div>
           <span>&copy; {new Date().getFullYear()} Mora. All rights reserved.</span>

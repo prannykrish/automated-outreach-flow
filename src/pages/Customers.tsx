@@ -15,6 +15,7 @@ import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
+import { useOnboardingContext } from "@/contexts/OnboardingContext";
 
 interface ParsedCustomer {
   first_name: string;
@@ -42,7 +43,10 @@ export default function Customers() {
   
   const [parsedCustomers, setParsedCustomers] = useState<ParsedCustomer[]>([]);
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
+  const [bulkSendMode, setBulkSendMode] = useState<"sequence" | "direct">("sequence");
   const [bulkSequenceId, setBulkSequenceId] = useState("");
+  const [bulkDirectSubject, setBulkDirectSubject] = useState("");
+  const [bulkDirectBody, setBulkDirectBody] = useState("");
   const [bulkScheduledDate, setBulkScheduledDate] = useState<Date | undefined>(undefined);
   const [bulkScheduledTime, setBulkScheduledTime] = useState("09:00");
   const [bulkSendImmediately, setBulkSendImmediately] = useState(true);
@@ -54,6 +58,7 @@ export default function Customers() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const { user, organizationId } = useAuth();
+  const { completeStep } = useOnboardingContext();
 
   const { data: sequences } = useQuery({
     queryKey: ["sequences", organizationId],
@@ -138,7 +143,17 @@ export default function Customers() {
     enabled: !!bulkSequenceId,
   });
 
-  const bulkRequiredCustomFields = useMemo(() => extractCustomFields(bulkSequenceTemplates), [bulkSequenceTemplates]);
+  const bulkRequiredCustomFields = useMemo(() => {
+    if (bulkSendMode === "direct") {
+      const text = `${bulkDirectSubject} ${bulkDirectBody}`;
+      const placeholders = new Set<string>();
+      for (const match of text.matchAll(/\[([^\]]+)\]/g)) {
+        if (!isBuiltinPlaceholder(match[1])) placeholders.add(match[1]);
+      }
+      return Array.from(placeholders).sort();
+    }
+    return extractCustomFields(bulkSequenceTemplates);
+  }, [bulkSendMode, bulkDirectSubject, bulkDirectBody, bulkSequenceTemplates]);
 
   // Reset custom field values when sequence changes
   useEffect(() => {
@@ -162,6 +177,21 @@ export default function Customers() {
     }
   };
 
+  const checkEmailAllowance = async (emailCount: number) => {
+    if (!organizationId) return;
+    const { data: allowance } = await supabase.rpc("check_email_allowance", { org_id: organizationId });
+    if (allowance) {
+      const remaining = Math.max(0, allowance.limit - allowance.used);
+      if (emailCount > remaining) {
+        toast({
+          title: "Email limit warning",
+          description: `You have ${remaining} email${remaining !== 1 ? "s" : ""} remaining this month. Scheduling ${emailCount} may cause some to fail.`,
+          variant: "destructive",
+        });
+      }
+    }
+  };
+
   const getScheduledDateTime = (date: Date | undefined, time: string, immediate: boolean): Date => {
     if (immediate) {
       return new Date();
@@ -179,6 +209,24 @@ export default function Customers() {
 
   const createCustomerMutation = useMutation({
     mutationFn: async () => {
+      // Check for duplicate email in pipeline
+      if (formData.email && organizationId) {
+        const { data: existing } = await supabase
+          .from("customers")
+          .select("id")
+          .eq("email", formData.email.trim().toLowerCase())
+          .eq("organization_id", organizationId)
+          .limit(1);
+        if (existing && existing.length > 0) {
+          throw new Error("This email is already in your pipeline.");
+        }
+      }
+
+      // Warn if scheduling would exceed email limit
+      if (formData.sequence_id) {
+        await checkEmailAllowance(1);
+      }
+
       const firstStep = steps?.find(
         (s) => s.sequence_id === formData.sequence_id && s.step_order === 0
       );
@@ -237,10 +285,11 @@ export default function Customers() {
       setScheduledDate(undefined);
       setScheduledTime("09:00");
       setSendImmediately(true);
-      toast({ 
+      toast({
         title: "Customer added successfully",
         description: sendImmediately ? "Email will be sent shortly." : "Email scheduled."
       });
+      completeStep("add_prospect");
     },
     onError: (error) => {
       toast({ title: "Error adding customer", description: error.message, variant: "destructive" });
@@ -249,17 +298,100 @@ export default function Customers() {
 
   const bulkImportMutation = useMutation({
     mutationFn: async (customers: ParsedCustomer[]) => {
-      const firstStep = steps?.find(
-        (s) => s.sequence_id === bulkSequenceId && s.step_order === 0
-      );
+      // Filter out duplicate emails (within CSV and against existing pipeline)
+      const emails = customers.map((c) => c.email.trim().toLowerCase());
+      const { data: existingCustomers } = await supabase
+        .from("customers")
+        .select("email")
+        .eq("organization_id", organizationId)
+        .in("email", emails);
 
-      const customersToInsert = customers.map((c) => ({
+      const existingEmails = new Set((existingCustomers || []).map((c: any) => c.email.toLowerCase()));
+      const seenEmails = new Set<string>();
+      const uniqueCustomers: ParsedCustomer[] = [];
+      let skippedCount = 0;
+
+      for (const c of customers) {
+        const email = c.email.trim().toLowerCase();
+        if (existingEmails.has(email) || seenEmails.has(email)) {
+          skippedCount++;
+          continue;
+        }
+        seenEmails.add(email);
+        uniqueCustomers.push(c);
+      }
+
+      if (skippedCount > 0) {
+        toast({
+          title: `${skippedCount} duplicate${skippedCount > 1 ? "s" : ""} skipped`,
+          description: "Emails already in your pipeline or duplicated in the CSV were excluded.",
+        });
+      }
+
+      if (uniqueCustomers.length === 0) {
+        throw new Error("All emails are already in your pipeline.");
+      }
+
+      // Warn if scheduling would exceed email limit
+      await checkEmailAllowance(uniqueCustomers.length);
+
+      let sequenceId = bulkSequenceId;
+      let firstStep: any = null;
+
+      if (bulkSendMode === "direct") {
+        // Create an ad-hoc template, sequence, and step for the direct message
+        const { data: template, error: tplErr } = await supabase
+          .from("email_templates")
+          .insert({
+            name: `Direct: ${bulkDirectSubject.slice(0, 50) || "Untitled"}`,
+            subject: bulkDirectSubject,
+            body: bulkDirectBody,
+            stage: "initial",
+            organization_id: organizationId,
+            user_id: user?.id,
+          })
+          .select()
+          .single();
+        if (tplErr || !template) throw new Error("Failed to create email template");
+
+        const { data: sequence, error: seqErr } = await supabase
+          .from("email_sequences")
+          .insert({
+            name: `Direct Send – ${new Date().toLocaleDateString()}`,
+            organization_id: organizationId,
+            user_id: user?.id,
+          })
+          .select()
+          .single();
+        if (seqErr || !sequence) throw new Error("Failed to create sequence");
+
+        const { data: step, error: stepErr } = await supabase
+          .from("sequence_steps")
+          .insert({
+            sequence_id: sequence.id,
+            template_id: template.id,
+            step_order: 0,
+            delay_days: 0,
+          })
+          .select()
+          .single();
+        if (stepErr || !step) throw new Error("Failed to create sequence step");
+
+        sequenceId = sequence.id;
+        firstStep = step;
+      } else {
+        firstStep = steps?.find(
+          (s) => s.sequence_id === bulkSequenceId && s.step_order === 0
+        );
+      }
+
+      const customersToInsert = uniqueCustomers.map((c) => ({
         first_name: c.first_name,
         last_name: c.last_name,
         firm_name: c.firm_name,
         email: c.email,
         custom_fields: Object.keys(c.custom_fields).length > 0 ? c.custom_fields : null,
-        sequence_id: bulkSequenceId || null,
+        sequence_id: sequenceId || null,
         current_step_id: firstStep?.id || null,
         status: "new",
         user_id: user?.id ?? null,
@@ -275,7 +407,7 @@ export default function Customers() {
 
       if (firstStep && insertedCustomers) {
         const scheduledFor = getScheduledDateTime(bulkScheduledDate, bulkScheduledTime, bulkSendImmediately);
-        
+
         const scheduledSends = insertedCustomers.map((customer) => ({
           customer_id: customer.id,
           step_id: firstStep.id,
@@ -304,6 +436,7 @@ export default function Customers() {
         title: `Successfully imported ${data?.length || 0} customers`,
         description: bulkSendImmediately ? "Emails will be sent shortly." : "Emails scheduled."
       });
+      completeStep("add_prospect");
       // Remove only the rows that were sent, keep the rest
       const sentIndices = new Set(
         parsedCustomers
@@ -437,7 +570,10 @@ export default function Customers() {
   const clearBulkImport = () => {
     setParsedCustomers([]);
     setSelectedRows(new Set());
+    setBulkSendMode("sequence");
     setBulkSequenceId("");
+    setBulkDirectSubject("");
+    setBulkDirectBody("");
     setBulkScheduledDate(undefined);
     setBulkScheduledTime("09:00");
     setBulkSendImmediately(true);
@@ -592,20 +728,34 @@ export default function Customers() {
           <CardContent className="space-y-4">
             <div className="grid gap-4 md:grid-cols-4">
               <div>
-                <label className="text-sm font-medium">Assign to Sequence</label>
-                <Select value={bulkSequenceId} onValueChange={setBulkSequenceId}>
+                <label className="text-sm font-medium">Send Method</label>
+                <Select value={bulkSendMode} onValueChange={(v: "sequence" | "direct") => { setBulkSendMode(v); setBulkSequenceId(""); }}>
                   <SelectTrigger>
-                    <SelectValue placeholder="Select a sequence" />
+                    <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {sequences?.map((sequence) => (
-                      <SelectItem key={sequence.id} value={sequence.id}>
-                        {sequence.name}
-                      </SelectItem>
-                    ))}
+                    <SelectItem value="sequence">Use Sequence</SelectItem>
+                    <SelectItem value="direct">Direct Message</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
+              {bulkSendMode === "sequence" && (
+                <div>
+                  <label className="text-sm font-medium">Assign to Sequence</label>
+                  <Select value={bulkSequenceId} onValueChange={setBulkSequenceId}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select a sequence" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {sequences?.map((sequence) => (
+                        <SelectItem key={sequence.id} value={sequence.id}>
+                          {sequence.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
               
               <div>
                 <label className="text-sm font-medium">When to Send</label>
@@ -700,9 +850,34 @@ export default function Customers() {
               )}
             </div>
 
-            {bulkSequenceId && bulkRequiredCustomFields.length > 0 && (
+            {bulkSendMode === "direct" && (
+              <div className="space-y-3">
+                <div>
+                  <label className="text-sm font-medium">Subject</label>
+                  <Input
+                    value={bulkDirectSubject}
+                    onChange={(e) => setBulkDirectSubject(e.target.value)}
+                    placeholder="e.g. Quick intro, [First Name]"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium">Message</label>
+                  <Textarea
+                    value={bulkDirectBody}
+                    onChange={(e) => setBulkDirectBody(e.target.value)}
+                    placeholder="e.g. Hi [First Name], I wanted to reach out..."
+                    rows={5}
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Use [First Name], [Last Name], [Firm Name], or [Custom Field] for placeholders.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {((bulkSendMode === "sequence" && bulkSequenceId) || bulkSendMode === "direct") && bulkRequiredCustomFields.length > 0 && (
               <div className="p-3 bg-muted/50 rounded-lg">
-                <p className="text-sm font-medium">Required custom fields for this sequence:</p>
+                <p className="text-sm font-medium">Required custom fields:</p>
                 <p className="text-xs text-muted-foreground mt-1">
                   Include these in your CSV or fill them in below: {bulkRequiredCustomFields.join(", ")}
                 </p>
@@ -712,7 +887,7 @@ export default function Customers() {
             <div className="flex justify-end">
               <Button
                 onClick={handleBulkImport}
-                disabled={selectedValidCount === 0 || !bulkSequenceId || bulkImportMutation.isPending}
+                disabled={selectedValidCount === 0 || (bulkSendMode === "sequence" ? !bulkSequenceId : (!bulkDirectSubject.trim() || !bulkDirectBody.trim())) || bulkImportMutation.isPending}
               >
                 <Upload className="mr-2 h-4 w-4" />
                 {bulkSendImmediately ? `Import & Send to ${selectedValidCount} Customers` : `Import ${selectedValidCount} Customers`}

@@ -173,9 +173,18 @@ export type Database = {
           replied_at: string | null
           resend_id: string | null
           sent_at: string | null
+          subject: string | null
+          body: string | null
+          sender_email: string | null
           status: string
           template_id: string | null
           user_id: string | null
+          bounce_type: string | null
+          bounce_message: string | null
+          delivered_at: string | null
+          clicked_at: string | null
+          campaign_id: string | null
+          in_reply_to_log_id: string | null
         }
         Insert: {
           created_at?: string | null
@@ -189,9 +198,18 @@ export type Database = {
           replied_at?: string | null
           resend_id?: string | null
           sent_at?: string | null
+          subject?: string | null
+          body?: string | null
+          sender_email?: string | null
           status: string
           template_id?: string | null
           user_id?: string | null
+          bounce_type?: string | null
+          bounce_message?: string | null
+          delivered_at?: string | null
+          clicked_at?: string | null
+          campaign_id?: string | null
+          in_reply_to_log_id?: string | null
         }
         Update: {
           created_at?: string | null
@@ -205,9 +223,18 @@ export type Database = {
           replied_at?: string | null
           resend_id?: string | null
           sent_at?: string | null
+          subject?: string | null
+          body?: string | null
+          sender_email?: string | null
           status?: string
           template_id?: string | null
           user_id?: string | null
+          bounce_type?: string | null
+          bounce_message?: string | null
+          delivered_at?: string | null
+          clicked_at?: string | null
+          campaign_id?: string | null
+          in_reply_to_log_id?: string | null
         }
         Relationships: [
           {
@@ -229,6 +256,79 @@ export type Database = {
             columns: ["template_id"]
             isOneToOne: false
             referencedRelation: "email_templates"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      inbound_emails: {
+        Row: {
+          id: string
+          organization_id: string
+          from_email: string
+          from_name: string | null
+          to_email: string
+          cc: string[] | null
+          subject: string | null
+          html: string | null
+          text_body: string | null
+          resend_email_id: string | null
+          in_reply_to_log_id: string | null
+          customer_id: string | null
+          is_read: boolean
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          organization_id: string
+          from_email: string
+          from_name?: string | null
+          to_email: string
+          cc?: string[] | null
+          subject?: string | null
+          html?: string | null
+          text_body?: string | null
+          resend_email_id?: string | null
+          in_reply_to_log_id?: string | null
+          customer_id?: string | null
+          is_read?: boolean
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          organization_id?: string
+          from_email?: string
+          from_name?: string | null
+          to_email?: string
+          cc?: string[] | null
+          subject?: string | null
+          html?: string | null
+          text_body?: string | null
+          resend_email_id?: string | null
+          in_reply_to_log_id?: string | null
+          customer_id?: string | null
+          is_read?: boolean
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "inbound_emails_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "inbound_emails_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "inbound_emails_in_reply_to_log_id_fkey"
+            columns: ["in_reply_to_log_id"]
+            isOneToOne: false
+            referencedRelation: "email_logs"
             referencedColumns: ["id"]
           },
         ]
@@ -277,6 +377,41 @@ export type Database = {
             columns: ["organization_email_id"]
             isOneToOne: false
             referencedRelation: "organization_emails"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      campaign_usage: {
+        Row: {
+          id: string
+          organization_id: string
+          month: string
+          campaigns_run: number
+          prospects_researched: number
+          updated_at: string | null
+        }
+        Insert: {
+          id?: string
+          organization_id: string
+          month: string
+          campaigns_run?: number
+          prospects_researched?: number
+          updated_at?: string | null
+        }
+        Update: {
+          id?: string
+          organization_id?: string
+          month?: string
+          campaigns_run?: number
+          prospects_researched?: number
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "campaign_usage_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
             referencedColumns: ["id"]
           },
         ]
@@ -411,6 +546,50 @@ export type Database = {
           },
           {
             foreignKeyName: "email_templates_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      onboarding_progress: {
+        Row: {
+          id: string
+          user_id: string
+          organization_id: string
+          role: string
+          completed_steps: string[]
+          dismissed: boolean
+          completed_at: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          organization_id: string
+          role?: string
+          completed_steps?: string[]
+          dismissed?: boolean
+          completed_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          organization_id?: string
+          role?: string
+          completed_steps?: string[]
+          dismissed?: boolean
+          completed_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "onboarding_progress_organization_id_fkey"
             columns: ["organization_id"]
             isOneToOne: false
             referencedRelation: "organizations"
@@ -594,12 +773,16 @@ export type Database = {
           invite_code: string
           name: string
           plan: string
+          plan_campaign_limit: number
           plan_domain_limit: number
           plan_email_address_limit: number
           plan_email_limit: number
           plan_member_limit: number
           stripe_customer_id: string | null
           stripe_subscription_id: string | null
+          trial_domain: string | null
+          trial_email: string | null
+          trial_email_total_limit: number
           trial_ends_at: string | null
           updated_at: string | null
         }
@@ -612,12 +795,15 @@ export type Database = {
           invite_code?: string
           name: string
           plan?: string
+          plan_campaign_limit?: number
           plan_domain_limit?: number
           plan_email_address_limit?: number
           plan_email_limit?: number
           plan_member_limit?: number
           stripe_customer_id?: string | null
           stripe_subscription_id?: string | null
+          trial_domain?: string | null
+          trial_email_total_limit?: number
           trial_ends_at?: string | null
           updated_at?: string | null
         }
@@ -630,12 +816,15 @@ export type Database = {
           invite_code?: string
           name?: string
           plan?: string
+          plan_campaign_limit?: number
           plan_domain_limit?: number
           plan_email_address_limit?: number
           plan_email_limit?: number
           plan_member_limit?: number
           stripe_customer_id?: string | null
           stripe_subscription_id?: string | null
+          trial_domain?: string | null
+          trial_email_total_limit?: number
           trial_ends_at?: string | null
           updated_at?: string | null
         }
@@ -897,9 +1086,23 @@ export type Database = {
           reason?: string
         }
       }
+      check_campaign_allowance: {
+        Args: { org_id: string }
+        Returns: {
+          allowed: boolean
+          used?: number
+          limit?: number
+          plan?: string
+          reason?: string
+        }
+      }
       increment_email_usage: {
         Args: { org_id: string; send_month: string; count?: number }
         Returns: number
+      }
+      increment_campaign_usage: {
+        Args: { org_id: string; usage_month: string; campaign_count?: number; prospect_count?: number }
+        Returns: { campaigns_run: number; prospects_researched: number }
       }
       create_organization_with_owner: {
         Args: { org_name: string }

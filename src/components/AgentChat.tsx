@@ -1,9 +1,14 @@
 import { useState, useRef, useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Send, Square, Bot, User, Loader2 } from "lucide-react";
+import { Send, Square, User, Loader2 } from "lucide-react";
+import MoraIcon from "@/components/MoraIcon";
 import { useAgentChat, ChatMessage } from "@/hooks/useAgentChat";
 import { useAgent } from "@/contexts/AgentContext";
+import { useAuth } from "@/contexts/AuthContext";
+import { supabase } from "@/integrations/supabase/client";
+import { Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -20,8 +25,59 @@ const SUGGESTED_PROMPTS = [
   "Help me write a cold outreach email",
 ];
 
+const AGENT_LIMITS: Record<string, number> = {
+  trial: 25,
+  starter: 25,
+  growth: 200,
+  enterprise: 999999,
+};
+
 export default function AgentChat({ conversationId, onConversationCreated, variant }: AgentChatProps) {
   const { currentPage } = useAgent();
+  const { organizationId } = useAuth();
+
+  // Fetch agent usage for this month
+  const { data: agentUsage } = useQuery({
+    queryKey: ["agent-usage", organizationId],
+    queryFn: async () => {
+      const startOfMonth = new Date();
+      startOfMonth.setDate(1);
+      startOfMonth.setHours(0, 0, 0, 0);
+
+      const { data: org } = await supabase
+        .from("organizations")
+        .select("plan")
+        .eq("id", organizationId!)
+        .single();
+
+      const plan = org?.plan || "trial";
+      const limit = AGENT_LIMITS[plan] ?? 25;
+
+      const { data: convs } = await supabase
+        .from("agent_conversations" as any)
+        .select("id")
+        .eq("organization_id", organizationId);
+
+      let used = 0;
+      if (convs && convs.length > 0) {
+        const { count } = await supabase
+          .from("agent_messages" as any)
+          .select("*", { count: "exact", head: true })
+          .eq("role", "user")
+          .in("conversation_id", convs.map((c: any) => c.id))
+          .gte("created_at", startOfMonth.toISOString());
+        used = count || 0;
+      }
+
+      return { used, limit, plan };
+    },
+    enabled: !!organizationId,
+    refetchInterval: 30000,
+  });
+
+  const isAtLimit = agentUsage ? agentUsage.used >= agentUsage.limit : false;
+  const isEnterprise = agentUsage?.plan === "enterprise";
+
   const {
     messages,
     isStreaming,
@@ -80,11 +136,11 @@ export default function AgentChat({ conversationId, onConversationCreated, varia
         {messages.length === 0 && !isStreaming && (
           <div className="flex flex-col items-center justify-center h-full text-center px-4">
             <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mb-4">
-              <Bot className="h-6 w-6 text-primary" />
+              <MoraIcon className="h-6 w-6" />
             </div>
-            <h3 className="text-lg font-semibold mb-1">Ask Mora anything</h3>
+            <h3 className="text-lg font-semibold mb-1">Ask Mora</h3>
             <p className="text-sm text-muted-foreground mb-6 max-w-sm">
-              I can analyze your templates, sequences, pipeline, and help you write better outreach emails.
+              Mora can analyze your templates, sequences, pipeline, and help you write better outreach emails.
             </p>
             <div className="grid gap-2 w-full max-w-sm">
               {SUGGESTED_PROMPTS.map((prompt) => (
@@ -108,7 +164,7 @@ export default function AgentChat({ conversationId, onConversationCreated, varia
         {isStreaming && (
           <div className="flex gap-3">
             <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
-              <Bot className="h-4 w-4 text-primary" />
+              <MoraIcon className="h-4 w-4" />
             </div>
             <div className="flex-1 min-w-0">
               {statusMessage && (
@@ -148,26 +204,46 @@ export default function AgentChat({ conversationId, onConversationCreated, varia
 
       {/* Input area */}
       <div className="p-4 pt-2">
-        <div className="flex gap-2 items-end">
-          <Textarea
-            ref={textareaRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Ask Mora..."
-            className="min-h-[44px] max-h-[120px] resize-none rounded-2xl border-muted-foreground/20 px-4 py-3"
-            rows={1}
-          />
-          {isStreaming ? (
-            <Button variant="outline" size="icon" onClick={stopStreaming} className="shrink-0 h-[44px] w-[44px] rounded-full">
-              <Square className="h-4 w-4" />
-            </Button>
-          ) : (
-            <Button size="icon" onClick={handleSend} disabled={!input.trim()} className="shrink-0 h-[44px] w-[44px] rounded-full">
-              <Send className="h-4 w-4" />
-            </Button>
-          )}
-        </div>
+        {isAtLimit ? (
+          <div className="text-center py-3 px-4 rounded-2xl border border-muted-foreground/20 bg-muted/50">
+            <p className="text-sm text-muted-foreground mb-2">
+              You've used all {agentUsage?.limit} Mora messages this month.
+            </p>
+            <Link to="/billing">
+              <Button size="sm" className="rounded-full">
+                Upgrade for more
+              </Button>
+            </Link>
+          </div>
+        ) : (
+          <>
+            <div className="flex gap-2 items-end">
+              <Textarea
+                ref={textareaRef}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Ask Mora..."
+                className="min-h-[44px] max-h-[120px] resize-none rounded-2xl border-muted-foreground/20 px-4 py-3"
+                rows={1}
+              />
+              {isStreaming ? (
+                <Button variant="outline" size="icon" onClick={stopStreaming} className="shrink-0 h-[44px] w-[44px] rounded-full">
+                  <Square className="h-4 w-4" />
+                </Button>
+              ) : (
+                <Button size="icon" onClick={handleSend} disabled={!input.trim()} className="shrink-0 h-[44px] w-[44px] rounded-full">
+                  <Send className="h-4 w-4" />
+                </Button>
+              )}
+            </div>
+            {agentUsage && !isEnterprise && (
+              <p className="text-[11px] text-muted-foreground text-center mt-1.5">
+                {agentUsage.used} / {agentUsage.limit} messages this month
+              </p>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
@@ -184,7 +260,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
         {isUser ? (
           <User className="h-4 w-4 text-foreground/70" />
         ) : (
-          <Bot className="h-4 w-4 text-primary" />
+          <MoraIcon className="h-4 w-4" />
         )}
       </div>
       <div className={`flex-1 min-w-0 ${isUser ? "text-right" : ""}`}>

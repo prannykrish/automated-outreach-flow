@@ -61,7 +61,50 @@ export default function Pipeline() {
 
       const { data, error } = await query;
       if (error) throw error;
-      return data as any;
+      // Filter out rows without a real name or email
+      return (data || []).filter((c: any) => c.email && (c.first_name || c.last_name)) as any;
+    },
+    enabled: !!organizationId,
+  });
+
+  // Fetch latest email event per customer for status display
+  const { data: latestEvents } = useQuery({
+    queryKey: ["latest-email-events", organizationId],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("email_logs")
+        .select("customer_id, status, opened_at, replied_at, clicked_at, bounce_type, delivered_at, sent_at")
+        .eq("organization_id", organizationId!)
+        .order("sent_at", { ascending: false });
+      // Group by customer, take latest
+      const map = new Map<string, any>();
+      for (const log of data || []) {
+        if (log.customer_id && !map.has(log.customer_id)) {
+          map.set(log.customer_id, log);
+        }
+      }
+      return map;
+    },
+    enabled: !!organizationId,
+  });
+
+  // Fetch next scheduled sends
+  const { data: nextSends } = useQuery({
+    queryKey: ["next-scheduled-sends", organizationId],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("scheduled_sends")
+        .select("customer_id, scheduled_for")
+        .eq("organization_id", organizationId!)
+        .eq("status", "pending")
+        .order("scheduled_for", { ascending: true });
+      const map = new Map<string, string>();
+      for (const s of data || []) {
+        if (s.customer_id && !map.has(s.customer_id)) {
+          map.set(s.customer_id, s.scheduled_for);
+        }
+      }
+      return map;
     },
     enabled: !!organizationId,
   });
@@ -170,8 +213,9 @@ export default function Pipeline() {
 
   const deleteCustomerMutation = useMutation({
     mutationFn: async (id: string) => {
-      // Delete scheduled sends first (foreign key constraint)
+      // Delete related records first (foreign key constraints)
       await supabase.from("scheduled_sends").delete().eq("customer_id", id);
+      await supabase.from("inbound_emails").delete().eq("customer_id", id);
       // Email logs are preserved for historic stats (customer_id set to NULL via FK ON DELETE SET NULL)
       const { error } = await supabase.from("customers").delete().eq("id", id);
       if (error) throw error;
@@ -301,11 +345,23 @@ export default function Pipeline() {
     );
   };
 
-  const getCurrentStep = (customer: any) => {
-    if (customer.sequence_steps) {
-      return `Step ${(customer.sequence_steps.step_order || 0) + 1}`;
-    }
-    return "Not assigned";
+  const getEmailEventBadge = (customerId: string) => {
+    const event = latestEvents?.get(customerId);
+    if (!event) return <span className="text-xs text-muted-foreground">No emails</span>;
+    if (event.replied_at) return <Badge className="bg-purple-500 text-white text-[10px]">Replied</Badge>;
+    if (event.clicked_at) return <Badge className="bg-yellow-500 text-white text-[10px]">Clicked</Badge>;
+    if (event.opened_at) return <Badge className="bg-green-500 text-white text-[10px]">Opened</Badge>;
+    if (event.bounce_type) return <Badge className="bg-red-500 text-white text-[10px]">Bounced</Badge>;
+    if (event.delivered_at || event.status === "delivered") return <Badge className="bg-cyan-500 text-white text-[10px]">Delivered</Badge>;
+    if (event.status === "sent") return <Badge className="bg-blue-500 text-white text-[10px]">Sent</Badge>;
+    if (event.status === "failed") return <Badge variant="destructive" className="text-[10px]">Failed</Badge>;
+    return <Badge variant="outline" className="text-[10px]">Pending</Badge>;
+  };
+
+  const getNextSend = (customerId: string) => {
+    const next = nextSends?.get(customerId);
+    if (!next) return null;
+    return format(new Date(next), "MMM d, h:mm a");
   };
 
   // Build combined timeline from email logs and scheduled sends
@@ -391,10 +447,10 @@ export default function Pipeline() {
             <TableHeader>
               <TableRow>
                 <TableHead>Customer</TableHead>
-                <TableHead>Firm</TableHead>
-                <TableHead>Sequence</TableHead>
-                <TableHead>Current Stage</TableHead>
-                <TableHead>Status</TableHead>
+                <TableHead>Company</TableHead>
+                <TableHead>Pipeline</TableHead>
+                <TableHead>Email Status</TableHead>
+                <TableHead>Next Email</TableHead>
                 <TableHead>Added</TableHead>
               </TableRow>
             </TableHeader>
@@ -422,33 +478,38 @@ export default function Pipeline() {
                       <div className="flex items-center gap-2">
                         <div className="w-8 h-8 bg-primary/10 rounded-full flex items-center justify-center">
                           <span className="text-sm font-medium text-primary">
-                            {customer.first_name[0]}
+                            {customer.first_name?.[0] || "?"}
                           </span>
                         </div>
                         <div>
                           <p className="font-medium">{customer.first_name} {customer.last_name}</p>
-                          <p className="text-sm text-muted-foreground">{customer.email}</p>
+                          <p className="text-xs text-muted-foreground">{customer.email}</p>
                         </div>
                       </div>
                     </TableCell>
-                    <TableCell>{customer.firm_name}</TableCell>
+                    <TableCell className="text-sm">{customer.firm_name || "—"}</TableCell>
                     <TableCell>
-                      {customer.email_sequences?.name || (
-                        <span className="text-muted-foreground">Not assigned</span>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1.5">
+                        {getStatusBadge(customer.status)}
                         {customer.paused && (
-                          <Badge variant="outline" className="text-yellow-600 border-yellow-600">
+                          <Badge variant="outline" className="text-[10px] text-yellow-600 border-yellow-600">
                             Paused
                           </Badge>
                         )}
-                        {getCurrentStep(customer)}
                       </div>
                     </TableCell>
-                    <TableCell>{getStatusBadge(customer.status)}</TableCell>
-                    <TableCell className="text-muted-foreground">
+                    <TableCell>{getEmailEventBadge(customer.id)}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {getNextSend(customer.id) ? (
+                        <div className="flex items-center gap-1">
+                          <Clock className="h-3 w-3" />
+                          <span>{getNextSend(customer.id)}</span>
+                        </div>
+                      ) : (
+                        <span>—</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
                       {format(new Date(customer.created_at), "MMM d, yyyy")}
                     </TableCell>
                   </TableRow>

@@ -4,7 +4,8 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Plus, MessageSquare, Bot, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
+import { Plus, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
+import MoraIcon from "@/components/MoraIcon";
 import { format } from "date-fns";
 import AgentChat from "@/components/AgentChat";
 import {
@@ -78,9 +79,9 @@ export default function Agent() {
   };
 
   return (
-    <div className="flex h-[calc(100vh-4rem)] -m-6">
+    <div className="flex h-full overflow-hidden">
       {/* Conversation list */}
-      <div className="w-64 border-r flex flex-col bg-muted/30">
+      <div className="w-56 border-r flex flex-col bg-muted/30">
         <div className="p-3 border-b">
           <Button onClick={handleNewChat} className="w-full rounded-full" size="sm">
             <Plus className="h-4 w-4 mr-2" />
@@ -99,8 +100,7 @@ export default function Agent() {
                 }`}
                 onClick={() => setSelectedConversationId(conv.id)}
               >
-                <MessageSquare className="h-3.5 w-3.5 shrink-0 opacity-40" />
-                <div className="min-w-0 flex-1 pr-6">
+                <div className="min-w-0 flex-1">
                   <p className="truncate text-[13px] font-medium leading-tight">{conv.title}</p>
                   <p className="text-[11px] text-muted-foreground mt-0.5">
                     {format(new Date(conv.updated_at), "MMM d, h:mm a")}
@@ -108,7 +108,7 @@ export default function Agent() {
                 </div>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-                    <button className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-background/80 transition-opacity">
+                    <button className="shrink-0 opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-background/80 transition-opacity">
                       <MoreHorizontal className="h-3.5 w-3.5 text-muted-foreground" />
                     </button>
                   </DropdownMenuTrigger>
@@ -130,7 +130,7 @@ export default function Agent() {
             ))}
             {(!conversations || conversations.length === 0) && (
               <div className="text-center py-8 px-4">
-                <Bot className="h-8 w-8 mx-auto mb-2 text-muted-foreground/50" />
+                <MoraIcon className="h-8 w-8 mx-auto mb-2 opacity-50" />
                 <p className="text-xs text-muted-foreground">No conversations yet</p>
               </div>
             )}

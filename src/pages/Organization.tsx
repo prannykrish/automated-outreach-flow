@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
@@ -20,11 +20,26 @@ import {
 import { Users, Globe, Mail, Plus, Trash2, Shield, CheckCircle, Eye, RefreshCw, Copy, Check, Clock, Loader2, UserPlus, X } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
+import { useLocation } from "react-router-dom";
+import { useOnboardingContext } from "@/contexts/OnboardingContext";
 
 export default function Organization() {
+  const location = useLocation();
+
+  // Scroll to anchor section when navigating with hash (e.g., /organization#domains)
+  useEffect(() => {
+    if (location.hash) {
+      const id = location.hash.slice(1);
+      setTimeout(() => {
+        const el = document.getElementById(id);
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 200);
+    }
+  }, [location.hash]);
   const { user, session } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const { completeStep } = useOnboardingContext();
   
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<"admin" | "member">("member");
@@ -46,6 +61,8 @@ export default function Organization() {
   const [showDnsDialog, setShowDnsDialog] = useState(false);
   const [verifyingDomainId, setVerifyingDomainId] = useState<string | null>(null);
   const [copiedField, setCopiedField] = useState<string | null>(null);
+  // Track when a domain was added/verify-triggered to show persistent spinners
+  const [autoVerifyingIds, setAutoVerifyingIds] = useState<Set<string>>(new Set());
 
   // Get current user's organization membership
   // Use isPending (not isLoading) so the loading state covers the gap when
@@ -89,7 +106,7 @@ export default function Organization() {
     const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
     const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
     const controller = new AbortController();
-    const timeoutMs = body.action === "verify" ? 30000 : 15000;
+    const timeoutMs = body.action === "verify" ? 45000 : 15000;
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(`${supabaseUrl}/functions/v1/manage-domains`, {
@@ -117,8 +134,7 @@ export default function Organization() {
   };
 
   // Get organization domains
-  // Auto-poll every 15s when any domain is unverified — calls edge function
-  // to sync with Resend so status updates appear in real time
+  // Poll faster (5s) when DNS dialog is open with unverified domain, slower (30s) otherwise
   const { data: domains } = useQuery({
     queryKey: ["org-domains", organization?.id, !!session],
     queryFn: async () => {
@@ -134,18 +150,34 @@ export default function Organization() {
     enabled: !!organization?.id && !!session,
     refetchInterval: (query) => {
       const data = query.state.data as any[] | undefined;
-      return data?.some((d) => !d.verified) ? 15000 : false;
+      const hasUnverified = data?.some((d) => !d.verified);
+      if (!hasUnverified) return false;
+      // Poll fast when dialog is open, slower in background
+      return showDnsDialog ? 5000 : 30000;
     },
   });
 
-  // Background sync: when unverified domains exist, periodically call
-  // the edge function to sync status from Resend (not just read local DB)
+  // Background sync: trigger edge function to sync from Resend
+  // (the DB query above only reads local state — this makes Resend re-check DNS)
+  const syncIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const syncInFlightRef = useRef(false);
+
   useEffect(() => {
     if (!organization?.id || !domains) return;
     const hasUnverified = domains.some((d: any) => !d.verified && d.resend_domain_id);
-    if (!hasUnverified) return;
+    if (!hasUnverified) {
+      // Clear auto-verifying when all verified
+      if (autoVerifyingIds.size > 0) setAutoVerifyingIds(new Set());
+      if (syncIntervalRef.current) {
+        clearInterval(syncIntervalRef.current);
+        syncIntervalRef.current = null;
+      }
+      return;
+    }
 
     const syncStatus = async () => {
+      if (syncInFlightRef.current) return; // prevent overlapping syncs
+      syncInFlightRef.current = true;
       try {
         await callManageDomains({
           action: "sync-status",
@@ -154,26 +186,42 @@ export default function Organization() {
         queryClient.invalidateQueries({ queryKey: ["org-domains"] });
       } catch {
         // Silently ignore sync errors
+      } finally {
+        syncInFlightRef.current = false;
       }
     };
 
-    // Sync immediately once, then every 15s
+    // Sync immediately, then on interval
     syncStatus();
-    const interval = setInterval(syncStatus, 15000);
-    return () => clearInterval(interval);
-  }, [organization?.id, domains?.some((d: any) => !d.verified)]);
+    const intervalMs = showDnsDialog ? 8000 : 30000;
+    if (syncIntervalRef.current) clearInterval(syncIntervalRef.current);
+    syncIntervalRef.current = setInterval(syncStatus, intervalMs);
+    return () => {
+      if (syncIntervalRef.current) {
+        clearInterval(syncIntervalRef.current);
+        syncIntervalRef.current = null;
+      }
+    };
+  }, [organization?.id, domains?.some((d: any) => !d.verified), showDnsDialog]);
 
   // Keep the DNS dialog in sync when polling updates domain data
   useEffect(() => {
     if (selectedDomain && domains) {
       const updated = domains.find((d: any) => d.id === selectedDomain.id);
-      if (
-        updated &&
-        (updated.verified !== selectedDomain.verified ||
-          updated.status !== selectedDomain.status ||
-          JSON.stringify(updated.dns_records) !== JSON.stringify(selectedDomain.dns_records))
-      ) {
+      if (updated && (
+        updated.verified !== selectedDomain.verified ||
+        updated.status !== selectedDomain.status ||
+        JSON.stringify(updated.dns_records) !== JSON.stringify(selectedDomain.dns_records)
+      )) {
         setSelectedDomain(updated);
+        // If domain just became fully verified, clear auto-verifying
+        if (updated.verified && autoVerifyingIds.has(updated.id)) {
+          setAutoVerifyingIds((prev) => {
+            const next = new Set(prev);
+            next.delete(updated.id);
+            return next;
+          });
+        }
       }
     }
   }, [domains]);
@@ -246,7 +294,7 @@ export default function Organization() {
       }
 
       // Create invitation
-      const { data: invitation, error } = await supabase
+      let { data: invitation, error } = await supabase
         .from("invitations")
         .insert({
           organization_id: organization?.id,
@@ -258,8 +306,30 @@ export default function Organization() {
         .single();
 
       if (error) {
-        if (error.code === "23505") throw new Error("An invitation has already been sent to this email.");
-        throw error;
+        if (error.code === "23505") {
+          // Delete old invitation and re-create with fresh token/expiry
+          await supabase
+            .from("invitations")
+            .delete()
+            .eq("organization_id", organization?.id)
+            .eq("email", email);
+
+          const { data: retryInvitation, error: retryError } = await supabase
+            .from("invitations")
+            .insert({
+              organization_id: organization?.id,
+              email,
+              role,
+              invited_by: user?.id,
+            })
+            .select("token")
+            .single();
+
+          if (retryError) throw retryError;
+          invitation = retryInvitation;
+        } else {
+          throw error;
+        }
       }
 
       // Send invite email
@@ -279,6 +349,7 @@ export default function Organization() {
       setInviteEmail("");
       setInviteRole("member");
       toast({ title: "Invitation sent!" });
+      completeStep("invite_member");
     },
     onError: (error) => {
       toast({ title: "Error sending invitation", description: error.message, variant: "destructive" });
@@ -363,20 +434,20 @@ export default function Organization() {
       setShowDomainDialog(false);
       setNewDomain("");
 
-      if (data.domain?.verified || data.synced) {
-        // Domain was already verified on Resend — just synced
-        if (data.domain?.verified) {
-          toast({ title: "Domain verified!", description: "This domain is already verified and ready to use." });
-        } else {
-          setSelectedDomain(data.domain);
-          setShowDnsDialog(true);
-          toast({ title: "Domain synced", description: "Domain was already on Resend. Please verify your DNS records." });
-        }
+      if (data.domain?.verified) {
+        toast({ title: "Domain verified!", description: "This domain is already verified and ready to use." });
+        completeStep("domain_setup");
       } else {
-        // New domain — show DNS records
+        // Show DNS dialog and start auto-verification
         setSelectedDomain(data.domain);
         setShowDnsDialog(true);
-        toast({ title: "Domain added", description: "Please add the DNS records shown to verify your domain." });
+        if (data.auto_verifying && data.domain?.id) {
+          setAutoVerifyingIds((prev) => new Set(prev).add(data.domain.id));
+        }
+        toast({
+          title: data.synced ? "Domain synced" : "Domain added",
+          description: "Add the DNS records below. Verification will happen automatically.",
+        });
       }
     },
     onError: (error: any) => {
@@ -388,9 +459,35 @@ export default function Organization() {
     },
   });
 
-  // Verify domain mutation
+  // Verify domain mutation — triggers Resend to re-check DNS.
+  // Backend handles per-record merge (never downgrades verified records).
   const verifyDomainMutation = useMutation({
     mutationFn: async (domainId: string) => {
+      // Optimistically show "pending" spinners on unverified records
+      queryClient.setQueryData(
+        ["org-domains", organization?.id, !!session],
+        (old: any[] | undefined) =>
+          old?.map((d) => {
+            if (d.id !== domainId) return d;
+            return {
+              ...d,
+              dns_records: d.dns_records?.map((r: any) =>
+                r.status === "verified" ? r : { ...r, status: "pending" }
+              ),
+            };
+          }) ?? old
+      );
+      if (selectedDomain?.id === domainId) {
+        setSelectedDomain((prev: any) => prev ? {
+          ...prev,
+          dns_records: prev.dns_records?.map((r: any) =>
+            r.status === "verified" ? r : { ...r, status: "pending" }
+          ),
+        } : prev);
+      }
+      // Mark as auto-verifying so background polling shows spinners
+      setAutoVerifyingIds((prev) => new Set(prev).add(domainId));
+
       return callManageDomains({
         action: "verify",
         domain_id: domainId,
@@ -400,46 +497,42 @@ export default function Organization() {
     onSuccess: (data) => {
       setVerifyingDomainId(null);
 
-      // Immediately update the query cache with the returned domain data
-      // so the UI reflects the new status without waiting for a refetch
-      if (data.domain) {
-        queryClient.setQueryData(
-          ["org-domains", organization?.id, !!session],
-          (old: any[] | undefined) =>
-            old?.map((d) => (d.id === data.domain.id ? data.domain : d)) ?? old
-        );
-        // Update DNS dialog if open
-        if (selectedDomain?.id === data.domain.id) {
-          setSelectedDomain(data.domain);
-        }
-      }
-
-      // Also invalidate to ensure eventual consistency
-      queryClient.invalidateQueries({ queryKey: ["org-domains"] });
-
-      const status = data.status;
-      const dnsRecords = data.dns_records || [];
-      const anyVerified = dnsRecords.some((r: any) => r.status === "verified");
-      const anyPending = dnsRecords.some((r: any) => r.status === "pending" || r.status === "checking");
-
       if (data.verified) {
+        // All records verified
+        if (data.domain) {
+          queryClient.setQueryData(
+            ["org-domains", organization?.id, !!session],
+            (old: any[] | undefined) =>
+              old?.map((d) => (d.id === data.domain.id ? data.domain : d)) ?? old
+          );
+          if (selectedDomain?.id === data.domain.id) {
+            setSelectedDomain(data.domain);
+          }
+        }
+        setAutoVerifyingIds((prev) => {
+          const next = new Set(prev);
+          if (data.domain?.id) next.delete(data.domain.id);
+          return next;
+        });
+        queryClient.invalidateQueries({ queryKey: ["org-domains"] });
         toast({ title: "Domain verified!", description: "You can now send emails from this domain." });
-      } else if (status === "not_started" || (!anyPending && !anyVerified && dnsRecords.length > 0)) {
-        toast({
-          title: "Verification not detected",
-          description: "No DNS records were detected for this domain. Please double-check your DNS entries and try again.",
-          variant: "destructive",
-        });
-      } else if (dnsRecords.length === 0 && status !== "verified") {
-        toast({
-          title: "Verification not detected",
-          description: "No DNS records were returned. Ensure you've added the records exactly as shown, then try again.",
-          variant: "destructive",
-        });
+        completeStep("domain_setup");
       } else {
+        // Not fully verified — update cache with server's merged state
+        if (data.domain) {
+          queryClient.setQueryData(
+            ["org-domains", organization?.id, !!session],
+            (old: any[] | undefined) =>
+              old?.map((d) => (d.id === data.domain.id ? data.domain : d)) ?? old
+          );
+          if (selectedDomain?.id === data.domain.id) {
+            setSelectedDomain(data.domain);
+          }
+        }
+        // Keep auto-verifying — background polling will continue checking
         toast({
           title: "Verification in progress",
-          description: "DNS records are being checked. This may take a few minutes to propagate."
+          description: "DNS records are being checked. This usually takes a few minutes.",
         });
       }
     },
@@ -474,6 +567,7 @@ export default function Organization() {
       setNewEmailDisplayName("");
       setNewEmailReplyTo("");
       toast({ title: "Email added" });
+      completeStep("email_connection");
     },
     onError: (error) => {
       toast({ title: "Error adding email", description: error.message, variant: "destructive" });
@@ -484,6 +578,18 @@ export default function Organization() {
   const deleteMutation = useMutation({
     mutationFn: async ({ type, id }: { type: "member" | "domain" | "email"; id: string }) => {
       if (type === "domain") {
+        // Find the domain name to delete associated emails
+        const domain = domains?.find((d: any) => d.id === id);
+        if (domain) {
+          const affectedEmails = emails?.filter((e: any) => e.email.endsWith("@" + domain.domain)) || [];
+          if (affectedEmails.length > 0) {
+            const { error } = await supabase
+              .from("organization_emails")
+              .delete()
+              .in("id", affectedEmails.map((e: any) => e.id));
+            if (error) console.warn("Failed to delete associated emails:", error.message);
+          }
+        }
         // Use edge function to delete from Resend and database
         await callManageDomains({
           action: "delete",
@@ -501,6 +607,11 @@ export default function Organization() {
       // Invalidate both the generic list and the org-scoped list (which includes organization id in key)
       queryClient.invalidateQueries({ queryKey: [`org-${type}s`] });
       queryClient.invalidateQueries({ queryKey: [`org-${type}s`, organization?.id] });
+      if (type === "domain") {
+        // Also refresh emails since associated emails were deleted
+        queryClient.invalidateQueries({ queryKey: ["org-emails"] });
+        queryClient.invalidateQueries({ queryKey: ["org-emails", organization?.id] });
+      }
       setDeleteTarget(null);
       toast({ title: `${type.charAt(0).toUpperCase() + type.slice(1)} removed` });
     },
@@ -695,7 +806,7 @@ export default function Organization() {
       </div>
 
       {/* Members Section */}
-      <Card>
+      <Card id="members">
         <CardHeader>
           <div className="flex items-center justify-between">
             <div>
@@ -968,7 +1079,7 @@ export default function Organization() {
       </Card>
 
       {/* Domains Section */}
-      <Card>
+      <Card id="domains">
         <CardHeader>
           <div className="flex items-center justify-between">
             <div>
@@ -1038,20 +1149,25 @@ export default function Organization() {
                           <CheckCircle className="h-3 w-3 mr-1" />
                           Verified
                         </Badge>
-                      ) : domain.status === "not_started" ? (
-                        <Badge variant="outline" className="text-red-500 border-red-500">
+                      ) : autoVerifyingIds.has(domain.id) || verifyingDomainId === domain.id ? (
+                        <Badge variant="outline" className="text-yellow-600 border-yellow-600">
+                          <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                          Checking DNS...
+                        </Badge>
+                      ) : (domain.dns_records as any[])?.some((r: any) => r.status === "verified") ? (
+                        <Badge variant="outline" className="text-yellow-600 border-yellow-600">
                           <Clock className="h-3 w-3 mr-1" />
-                          DNS Not Detected
+                          Partially verified
                         </Badge>
                       ) : domain.status === "failed" || domain.status === "temporary_failure" ? (
                         <Badge variant="outline" className="text-red-500 border-red-500">
                           <Clock className="h-3 w-3 mr-1" />
-                          Verification Failed
+                          Verification failed
                         </Badge>
                       ) : (
-                        <Badge variant="outline" className="text-yellow-600 border-yellow-600">
-                          <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                          Verifying
+                        <Badge variant="outline" className="text-muted-foreground">
+                          <Clock className="h-3 w-3 mr-1" />
+                          Awaiting DNS
                         </Badge>
                       )}
                     </TableCell>
@@ -1112,16 +1228,16 @@ export default function Organization() {
       </Card>
 
       {/* Emails Section */}
-      <Card>
+      <Card id="emails">
         <CardHeader>
           <div className="flex items-center justify-between">
             <div>
               <CardTitle className="flex items-center gap-2">
                 <Mail className="h-5 w-5" />
-                Sending Emails
+                Emails
               </CardTitle>
               <CardDescription>
-                {emails?.length || 0} / {organization?.plan_email_address_limit ?? 2} sending emails
+                {emails?.length || 0} / {organization?.plan_email_address_limit ?? 2} emails
               </CardDescription>
             </div>
             <Dialog open={showEmailDialog} onOpenChange={setShowEmailDialog}>
@@ -1212,7 +1328,7 @@ export default function Organization() {
         </CardHeader>
         <CardContent>
           {emails?.length === 0 ? (
-            <p className="text-sm text-muted-foreground text-center py-8">No sending emails added yet.</p>
+            <p className="text-sm text-muted-foreground text-center py-8">No emails added yet.</p>
           ) : (
             <Table>
               <TableHeader>
@@ -1266,79 +1382,119 @@ export default function Organization() {
           <DialogHeader>
             <DialogTitle>DNS Records for {selectedDomain?.domain}</DialogTitle>
             <DialogDescription>
-              Add these DNS records to your domain's DNS settings (e.g., Cloudflare, GoDaddy, Namecheap) to verify ownership.
-              DNS changes can take up to 48 hours to propagate, but usually complete within a few minutes.
+              Add these DNS records to your domain's DNS settings (e.g., Cloudflare, GoDaddy, Namecheap).
+              {selectedDomain && !selectedDomain.verified && (autoVerifyingIds.has(selectedDomain.id) || verifyingDomainId === selectedDomain.id) && (
+                <span className="block mt-1 text-yellow-600 dark:text-yellow-400">
+                  Verification is running automatically. DNS changes usually propagate within a few minutes.
+                </span>
+              )}
             </DialogDescription>
           </DialogHeader>
+
+          {/* Per-record verification summary */}
+          {selectedDomain && !selectedDomain.verified && (
+            <div className="flex items-center gap-2 text-sm px-1">
+              {(autoVerifyingIds.has(selectedDomain.id) || verifyingDomainId === selectedDomain.id) ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin text-yellow-600" />
+                  <span className="text-muted-foreground">
+                    {(selectedDomain.dns_records as any[])?.filter((r: any) => r.status === "verified").length || 0} of{" "}
+                    {(selectedDomain.dns_records as any[])?.length || 0} records verified
+                  </span>
+                </>
+              ) : (
+                <>
+                  <Clock className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-muted-foreground">
+                    {(selectedDomain.dns_records as any[])?.filter((r: any) => r.status === "verified").length || 0} of{" "}
+                    {(selectedDomain.dns_records as any[])?.length || 0} records verified
+                  </span>
+                </>
+              )}
+            </div>
+          )}
+
           <div className="space-y-4">
-            {selectedDomain?.dns_records?.map((record: any, index: number) => (
-              <Card key={index} className="p-4">
-                <div className="flex items-center justify-between mb-3">
-                  <Badge variant={record.status === "verified" ? "default" : "outline"}>
-                    {record.record || record.type} Record
-                  </Badge>
-                  {record.status === "verified" ? (
-                    <span className="text-green-500 text-sm flex items-center gap-1">
-                      <CheckCircle className="h-4 w-4" /> Verified
-                    </span>
-                  ) : record.status === "not_started" ? (
-                    <span className="text-red-500 text-sm flex items-center gap-1">
-                      <Clock className="h-4 w-4" /> Not detected
-                    </span>
-                  ) : (
-                    <span className="text-yellow-600 text-sm flex items-center gap-1">
-                      <Loader2 className="h-4 w-4 animate-spin" /> Checking...
-                    </span>
-                  )}
-                </div>
-                <div className="grid gap-3">
-                  <div>
-                    <p className="text-xs text-muted-foreground mb-1">Type</p>
-                    <code className="bg-muted px-2 py-1 rounded text-sm">{record.type}</code>
+            {(selectedDomain?.dns_records as any[])?.map((record: any, index: number) => {
+              const isAutoVerifying = selectedDomain && (autoVerifyingIds.has(selectedDomain.id) || verifyingDomainId === selectedDomain.id);
+              return (
+                <Card key={index} className="p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <Badge variant={record.status === "verified" ? "default" : "outline"}>
+                      {record.record || record.type} Record
+                    </Badge>
+                    {record.status === "verified" ? (
+                      <span className="text-green-500 text-sm flex items-center gap-1">
+                        <CheckCircle className="h-4 w-4" /> Verified
+                      </span>
+                    ) : isAutoVerifying || record.status === "pending" ? (
+                      <span className="text-yellow-600 text-sm flex items-center gap-1">
+                        <Loader2 className="h-4 w-4 animate-spin" /> Checking...
+                      </span>
+                    ) : record.status === "failed" || record.status === "temporary_failure" ? (
+                      <span className="text-red-500 text-sm flex items-center gap-1">
+                        <Clock className="h-4 w-4" /> Failed
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground text-sm flex items-center gap-1">
+                        <Clock className="h-4 w-4" /> Not detected
+                      </span>
+                    )}
                   </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground mb-1">Name / Host</p>
-                    <div className="flex items-center gap-2">
-                      <code className="bg-muted px-2 py-1 rounded text-sm flex-1 break-all">{record.name}</code>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => {
-                          navigator.clipboard.writeText(record.name);
-                          setCopiedField(`name-${index}`);
-                          setTimeout(() => setCopiedField(null), 2000);
-                        }}
-                      >
-                        {copiedField === `name-${index}` ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
-                      </Button>
-                    </div>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground mb-1">Value</p>
-                    <div className="flex items-center gap-2">
-                      <code className="bg-muted px-2 py-1 rounded text-sm flex-1 break-all max-h-20 overflow-y-auto">{record.value}</code>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => {
-                          navigator.clipboard.writeText(record.value);
-                          setCopiedField(`value-${index}`);
-                          setTimeout(() => setCopiedField(null), 2000);
-                        }}
-                      >
-                        {copiedField === `value-${index}` ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
-                      </Button>
-                    </div>
-                  </div>
-                  {record.priority !== undefined && (
+                  <div className="grid gap-3">
                     <div>
-                      <p className="text-xs text-muted-foreground mb-1">Priority</p>
-                      <code className="bg-muted px-2 py-1 rounded text-sm">{record.priority}</code>
+                      <p className="text-xs text-muted-foreground mb-1">Type</p>
+                      <code className="bg-muted px-2 py-1 rounded text-sm">{record.type}</code>
                     </div>
-                  )}
-                </div>
-              </Card>
-            ))}
+                    <div>
+                      <p className="text-xs text-muted-foreground mb-1">Name / Host</p>
+                      <div className="flex items-center gap-2">
+                        <code className="bg-muted px-2 py-1 rounded text-sm flex-1 break-all">{record.name}</code>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            navigator.clipboard.writeText(record.name);
+                            setCopiedField(`name-${index}`);
+                            setTimeout(() => setCopiedField(null), 2000);
+                          }}
+                        >
+                          {copiedField === `name-${index}` ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+                        </Button>
+                      </div>
+                      {record.name === "@" && (
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Use <strong>@</strong> for root domain. On some providers (e.g. Route 53), leave the name field blank instead.
+                        </p>
+                      )}
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground mb-1">Value</p>
+                      <div className="flex items-center gap-2">
+                        <code className="bg-muted px-2 py-1 rounded text-sm flex-1 break-all max-h-20 overflow-y-auto">{record.value}</code>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            navigator.clipboard.writeText(record.value);
+                            setCopiedField(`value-${index}`);
+                            setTimeout(() => setCopiedField(null), 2000);
+                          }}
+                        >
+                          {copiedField === `value-${index}` ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+                        </Button>
+                      </div>
+                    </div>
+                    {record.priority !== undefined && (
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-1">Priority</p>
+                        <code className="bg-muted px-2 py-1 rounded text-sm">{record.priority}</code>
+                      </div>
+                    )}
+                  </div>
+                </Card>
+              );
+            })}
           </div>
           <DialogFooter className="gap-2 sm:gap-0">
             <Button variant="outline" onClick={() => setShowDnsDialog(false)}>
@@ -1350,12 +1506,17 @@ export default function Organization() {
                   setVerifyingDomainId(selectedDomain.id);
                   verifyDomainMutation.mutate(selectedDomain.id);
                 }}
-                disabled={verifyingDomainId === selectedDomain?.id}
+                disabled={verifyingDomainId === selectedDomain?.id || verifyDomainMutation.isPending}
               >
-                {verifyingDomainId === selectedDomain?.id ? (
+                {verifyingDomainId === selectedDomain?.id || verifyDomainMutation.isPending ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                     Checking...
+                  </>
+                ) : autoVerifyingIds.has(selectedDomain.id) ? (
+                  <>
+                    <RefreshCw className="h-4 w-4 mr-2" />
+                    Recheck Now
                   </>
                 ) : (
                   <>
@@ -1375,7 +1536,23 @@ export default function Organization() {
           <AlertDialogHeader>
             <AlertDialogTitle>Remove {deleteTarget?.type}?</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to remove <strong>{deleteTarget?.name}</strong>? This action cannot be undone.
+              {deleteTarget?.type === "domain" ? (
+                <>
+                  Are you sure you want to remove <strong>{deleteTarget?.name}</strong>? You will need to re-verify all DNS records (SPF, DKIM, MX) if you want to use this domain again.
+                  {(() => {
+                    const affectedEmails = emails?.filter((e: any) => e.email.endsWith("@" + deleteTarget?.name)) || [];
+                    if (affectedEmails.length === 0) return null;
+                    return (
+                      <span className="block mt-2">
+                        The following sending email{affectedEmails.length > 1 ? "s" : ""} will also be deleted:{" "}
+                        <strong>{affectedEmails.map((e: any) => e.email).join(", ")}</strong>
+                      </span>
+                    );
+                  })()}
+                </>
+              ) : (
+                <>Are you sure you want to remove <strong>{deleteTarget?.name}</strong>? This action cannot be undone.</>
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="flex gap-3 justify-end">

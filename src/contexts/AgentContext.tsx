@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState } from "react";
+import React, { createContext, useContext, useState, useCallback } from "react";
 
 type AgentContextValue = {
   isSidebarOpen: boolean;
@@ -9,6 +9,13 @@ type AgentContextValue = {
   setCurrentPage: (page: string) => void;
   sidebarConversationId: string | null;
   setSidebarConversationId: (id: string | null) => void;
+  isCommandBarOpen: boolean;
+  openCommandBar: () => void;
+  closeCommandBar: () => void;
+  toggleCommandBar: () => void;
+  isAgentRunning: boolean;
+  agentStatusText: string;
+  setAgentRunning: (running: boolean, statusText?: string) => void;
 };
 
 const AgentContext = createContext<AgentContextValue | undefined>(undefined);
@@ -17,6 +24,14 @@ export const AgentProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [currentPage, setCurrentPage] = useState("/");
   const [sidebarConversationId, setSidebarConversationId] = useState<string | null>(null);
+  const [isCommandBarOpen, setIsCommandBarOpen] = useState(false);
+  const [isAgentRunning, setIsAgentRunning] = useState(false);
+  const [agentStatusText, setAgentStatusText] = useState("");
+
+  const setAgentRunning = useCallback((running: boolean, statusText?: string) => {
+    setIsAgentRunning(running);
+    if (statusText !== undefined) setAgentStatusText(statusText);
+  }, []);
 
   return (
     <AgentContext.Provider
@@ -29,6 +44,13 @@ export const AgentProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setCurrentPage,
         sidebarConversationId,
         setSidebarConversationId,
+        isCommandBarOpen,
+        openCommandBar: () => setIsCommandBarOpen(true),
+        closeCommandBar: () => setIsCommandBarOpen(false),
+        toggleCommandBar: () => setIsCommandBarOpen((v) => !v),
+        isAgentRunning,
+        agentStatusText,
+        setAgentRunning,
       }}
     >
       {children}
