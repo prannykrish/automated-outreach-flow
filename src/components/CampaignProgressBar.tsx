@@ -2,16 +2,20 @@ import { useAgent } from "@/contexts/AgentContext";
 import { useCampaignAgentContext } from "@/contexts/CampaignAgentContext";
 import MoraIcon from "@/components/MoraIcon";
 import { Loader2, CheckCircle2, XCircle } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 
 export default function CampaignProgressBar() {
   const { isCommandBarOpen, openCommandBar, isAgentRunning, agentStatusText } = useAgent();
   const { campaignState } = useCampaignAgentContext();
   const [showCompleted, setShowCompleted] = useState(false);
+  const wasRunning = useRef(false);
 
-  // Show a brief "completed" bar after agent finishes
+  // Show a brief "completed" bar only when agent transitions from running → finished
   useEffect(() => {
-    if (!isAgentRunning && (campaignState.status === "completed" || campaignState.status === "failed" || campaignState.status === "review")) {
+    if (isAgentRunning) {
+      wasRunning.current = true;
+    } else if (wasRunning.current && (campaignState.status === "completed" || campaignState.status === "failed" || campaignState.status === "review")) {
+      wasRunning.current = false;
       setShowCompleted(true);
       const timer = setTimeout(() => setShowCompleted(false), 5000);
       return () => clearTimeout(timer);
