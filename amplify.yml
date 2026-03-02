@@ -6,6 +6,12 @@ frontend:
         - npm ci
     build:
       commands:
+        - echo "VITE_SUPABASE_URL=$VITE_SUPABASE_URL" >> .env
+        - echo "VITE_SUPABASE_PUBLISHABLE_KEY=$VITE_SUPABASE_PUBLISHABLE_KEY" >> .env
+        - echo "VITE_STRIPE_STARTER_PRICE_ID=$VITE_STRIPE_STARTER_PRICE_ID" >> .env
+        - echo "VITE_STRIPE_GROWTH_PRICE_ID=$VITE_STRIPE_GROWTH_PRICE_ID" >> .env
+        - echo "VITE_RESEND_API_KEY=$VITE_RESEND_API_KEY" >> .env
+        - echo "VITE_RESEND_FROM_EMAIL=$VITE_RESEND_FROM_EMAIL" >> .env
         - npm run build
   artifacts:
     baseDirectory: dist

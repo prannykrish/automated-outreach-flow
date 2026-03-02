@@ -26,7 +26,6 @@ async function handleInboundEmail(event: any, supabase: any) {
   // Fetch full email content from Resend API
   let html = null;
   let textBody = null;
-  let attachments: any[] = [];
   const resendApiKey = Deno.env.get("RESEND_API_KEY");
   if (resendApiKey && emailId) {
     try {
@@ -37,15 +36,6 @@ async function handleInboundEmail(event: any, supabase: any) {
         const emailData = await res.json();
         html = emailData.html || null;
         textBody = emailData.text || null;
-        // Extract attachment metadata if available
-        if (emailData.attachments && Array.isArray(emailData.attachments)) {
-          attachments = emailData.attachments.map((a: any) => ({
-            filename: a.filename || a.name || "attachment",
-            content_type: a.content_type || a.type || "application/octet-stream",
-            size: a.size || 0,
-            url: a.url || null,
-          }));
-        }
       } else {
         console.error("Failed to fetch inbound email content:", res.status, await res.text());
       }
@@ -119,51 +109,24 @@ async function handleInboundEmail(event: any, supabase: any) {
   }
 
   // Insert into inbound_emails
-  // Build insert payload — only include optional columns if they exist
-  const insertPayload: Record<string, any> = {
-    organization_id: organizationId,
-    from_email: fromEmail,
-    from_name: fromName,
-    to_email: toEmail,
-    cc: Array.isArray(data.cc) ? data.cc : data.cc ? [data.cc] : null,
-    subject,
-    html,
-    text_body: textBody,
-    resend_email_id: emailId,
-    in_reply_to_log_id: inReplyToLogId,
-    customer_id: customer?.id || null,
-    is_read: false,
-  };
-
-  // Try with attachments first, fall back without if column doesn't exist
-  if (attachments.length > 0) {
-    insertPayload.attachments = attachments;
-  }
-
-  let insertedInbound: any = null;
-  let insertError: any = null;
-
-  const result = await supabase
+  const { data: insertedInbound, error: insertError } = await supabase
     .from("inbound_emails")
-    .insert(insertPayload)
+    .insert({
+      organization_id: organizationId,
+      from_email: fromEmail,
+      from_name: fromName,
+      to_email: toEmail,
+      cc: Array.isArray(data.cc) ? data.cc : data.cc ? [data.cc] : null,
+      subject,
+      html,
+      text_body: textBody,
+      resend_email_id: emailId,
+      in_reply_to_log_id: inReplyToLogId,
+      customer_id: customer?.id || null,
+      is_read: false,
+    })
     .select("id")
     .single();
-
-  insertedInbound = result.data;
-  insertError = result.error;
-
-  // If insert failed (e.g. attachments column doesn't exist), retry without it
-  if (insertError && insertPayload.attachments !== undefined) {
-    console.warn("Insert failed with attachments, retrying without:", insertError.message);
-    delete insertPayload.attachments;
-    const retry = await supabase
-      .from("inbound_emails")
-      .insert(insertPayload)
-      .select("id")
-      .single();
-    insertedInbound = retry.data;
-    insertError = retry.error;
-  }
 
   if (insertError) {
     console.error("Failed to insert inbound email:", JSON.stringify(insertError));

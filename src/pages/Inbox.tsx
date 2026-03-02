@@ -46,17 +46,25 @@ interface EmailThread {
   messageCount: number;
 }
 
+function normalizeSubject(subject: string | null): string {
+  if (!subject) return "";
+  // Strip Re:/Fwd:/Fw: prefixes (case-insensitive, repeated)
+  return subject.replace(/^(re:\s*|fwd?:\s*)+/i, "").trim().toLowerCase();
+}
+
 function groupIntoThreads(emails: UnifiedEmail[]): EmailThread[] {
-  // Group by contact email
-  const contactGroups = new Map<string, UnifiedEmail[]>();
+  // Group by contact email + normalized subject to keep separate conversations apart
+  const threadGroups = new Map<string, UnifiedEmail[]>();
   for (const e of emails) {
-    const key = e.contactEmail.toLowerCase();
-    if (!contactGroups.has(key)) contactGroups.set(key, []);
-    contactGroups.get(key)!.push(e);
+    const contact = e.contactEmail.toLowerCase();
+    const subjectKey = normalizeSubject(e.subject) || `_no_subject_${e.id}`;
+    const key = `${contact}::${subjectKey}`;
+    if (!threadGroups.has(key)) threadGroups.set(key, []);
+    threadGroups.get(key)!.push(e);
   }
 
   const threads: EmailThread[] = [];
-  for (const [key, threadEmails] of contactGroups) {
+  for (const [key, threadEmails] of threadGroups) {
     threadEmails.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
     const latest = threadEmails[threadEmails.length - 1];
     const contactOut = threadEmails.find((e) => e.direction === "out");
