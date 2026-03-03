@@ -422,9 +422,13 @@ export default function Customers() {
         if (scheduleError) console.error("Failed to schedule emails:", scheduleError);
         
         if (bulkSendImmediately) {
-          setTimeout(() => {
-            triggerEmailProcessing();
-          }, 500);
+          // Trigger processing multiple times to handle all emails
+          // (edge function may time out before finishing large batches)
+          const totalEmails = insertedCustomers.length;
+          const rounds = Math.ceil(totalEmails / 10);
+          for (let i = 0; i < rounds; i++) {
+            setTimeout(() => triggerEmailProcessing(), 500 + i * 15000);
+          }
         }
       }
 
@@ -718,6 +722,11 @@ export default function Customers() {
                 </CardTitle>
                 <CardDescription>
                   {validCount} valid of {parsedCustomers.length} rows • {selectedValidCount} selected for import
+                  {selectedValidCount > 50 && (
+                    <span className="block text-yellow-600 dark:text-yellow-400 mt-1">
+                      Emails are sent in batches of ~50 and may take a few minutes to fully deliver.
+                    </span>
+                  )}
                 </CardDescription>
               </div>
               <Button variant="ghost" size="sm" onClick={clearBulkImport}>
