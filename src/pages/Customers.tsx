@@ -16,6 +16,8 @@ import { format } from "date-fns";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { useOnboardingContext } from "@/contexts/OnboardingContext";
+import { useDomainWarming } from "@/hooks/useDomainWarming";
+import DomainWarmingBanner from "@/components/DomainWarmingBanner";
 
 interface ParsedCustomer {
   first_name: string;
@@ -59,6 +61,7 @@ export default function Customers() {
   const queryClient = useQueryClient();
   const { user, organizationId } = useAuth();
   const { completeStep } = useOnboardingContext();
+  const { data: domainWarming } = useDomainWarming();
 
   const { data: sequences } = useQuery({
     queryKey: ["sequences", organizationId],
@@ -192,6 +195,21 @@ export default function Customers() {
     }
   };
 
+  const checkDomainWarming = async (emailCount: number) => {
+    if (!organizationId) return;
+    const { data } = await (supabase as any).rpc("check_domain_warming_status", { org_id: organizationId });
+    const overLimit = (data || []).filter((d: any) => d.is_over_limit);
+    if (overLimit.length > 0) {
+      const domainList = overLimit
+        .map((d: any) => `${d.domain} (${d.today_sent + emailCount}/${d.recommended_limit} today)`)
+        .join(", ");
+      toast({
+        title: "Domain warming warning",
+        description: `Sending ${emailCount} more email${emailCount !== 1 ? "s" : ""} may hurt deliverability for: ${domainList}. Your domain is still warming up.`,
+      });
+    }
+  };
+
   const getScheduledDateTime = (date: Date | undefined, time: string, immediate: boolean): Date => {
     if (immediate) {
       return new Date();
@@ -222,9 +240,10 @@ export default function Customers() {
         }
       }
 
-      // Warn if scheduling would exceed email limit
+      // Warn if scheduling would exceed email limit or domain warming threshold
       if (formData.sequence_id) {
         await checkEmailAllowance(1);
+        await checkDomainWarming(1);
       }
 
       const firstStep = steps?.find(
@@ -332,8 +351,9 @@ export default function Customers() {
         throw new Error("All emails are already in your pipeline.");
       }
 
-      // Warn if scheduling would exceed email limit
+      // Warn if scheduling would exceed email limit or domain warming threshold
       await checkEmailAllowance(uniqueCustomers.length);
+      await checkDomainWarming(uniqueCustomers.length);
 
       let sequenceId = bulkSequenceId;
       let firstStep: any = null;
@@ -710,6 +730,8 @@ export default function Customers() {
         <h1 className="text-3xl font-bold">Add Customers</h1>
         <p className="text-muted-foreground">Add new customers to your email sequences</p>
       </div>
+
+      {domainWarming && <DomainWarmingBanner domains={domainWarming} />}
 
       {parsedCustomers.length > 0 && (
         <Card>
