@@ -18,7 +18,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Building, Users, Shield, Plus, Trash2, UserPlus, Mail, Globe, ShieldCheck, Send, Eye, ArrowRightLeft, CreditCard } from "lucide-react";
+import { Building, Users, Shield, Plus, Trash2, UserPlus, Mail, Globe, ShieldCheck, Send, Eye, ArrowRightLeft, CreditCard, DollarSign } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
 
@@ -411,14 +411,16 @@ export default function SuperAdmin() {
     );
   }
 
-  const payingOrgs = organizations?.filter(o => ["starter", "growth", "enterprise"].includes(o.plan) && o.billing_status === "active").length || 0;
+  const PLAN_PRICES: Record<string, number> = { starter: 19, growth: 49, enterprise: 199 };
+  const payingOrgsList = organizations?.filter(o => ["starter", "growth", "enterprise"].includes(o.plan) && o.billing_status === "active" && o.name?.toLowerCase() !== "my company") || [];
+  const monthlyRevenue = payingOrgsList.reduce((sum, o) => sum + (PLAN_PRICES[o.plan] || 0), 0);
 
   const stats = {
     totalOrgs: organizations?.length || 0,
     totalUsers: allUsers?.length || 0,
-    totalMembers: allMembers?.length || 0,
     superAdmins: allUsers?.filter(u => u.is_super_admin).length || 0,
-    payingOrgs,
+    payingOrgs: payingOrgsList.length,
+    monthlyRevenue,
   };
 
   return (
@@ -458,21 +460,10 @@ export default function SuperAdmin() {
         <Card>
           <CardContent className="pt-6">
             <div className="flex items-center gap-4">
-              <UserPlus className="h-8 w-8 text-primary" />
+              <DollarSign className="h-8 w-8 text-green-600" />
               <div>
-                <p className="text-2xl font-bold">{stats.totalMembers}</p>
-                <p className="text-sm text-muted-foreground">Org Memberships</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-4">
-              <Shield className="h-8 w-8 text-primary" />
-              <div>
-                <p className="text-2xl font-bold">{stats.superAdmins}</p>
-                <p className="text-sm text-muted-foreground">Super Admins</p>
+                <p className="text-2xl font-bold">${stats.monthlyRevenue}</p>
+                <p className="text-sm text-muted-foreground">Monthly Revenue</p>
               </div>
             </div>
           </CardContent>
@@ -488,13 +479,24 @@ export default function SuperAdmin() {
             </div>
           </CardContent>
         </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-4">
+              <Shield className="h-8 w-8 text-primary" />
+              <div>
+                <p className="text-2xl font-bold">{stats.superAdmins}</p>
+                <p className="text-sm text-muted-foreground">Super Admins</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
       <Tabs defaultValue="organizations" className="space-y-4">
         <TabsList>
           <TabsTrigger value="organizations">Organizations</TabsTrigger>
           <TabsTrigger value="users">Users</TabsTrigger>
-          <TabsTrigger value="memberships">Memberships</TabsTrigger>
+          <TabsTrigger value="revenue">Revenue</TabsTrigger>
         </TabsList>
 
         {/* Organizations Tab */}
@@ -744,60 +746,74 @@ export default function SuperAdmin() {
           </Card>
         </TabsContent>
 
-        {/* Memberships Tab */}
-        <TabsContent value="memberships">
+        {/* Revenue Tab */}
+        <TabsContent value="revenue">
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                <UserPlus className="h-5 w-5" />
-                Organization Memberships
+                <DollarSign className="h-5 w-5" />
+                Revenue Overview
               </CardTitle>
-              <CardDescription>{allMembers?.length || 0} memberships across all organizations</CardDescription>
+              <CardDescription>
+                {payingOrgsList.length} paying organization{payingOrgsList.length !== 1 ? "s" : ""} &middot; ${stats.monthlyRevenue}/mo
+              </CardDescription>
             </CardHeader>
             <CardContent>
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>User</TableHead>
                     <TableHead>Organization</TableHead>
-                    <TableHead>Role</TableHead>
-                    <TableHead>Joined</TableHead>
-                    <TableHead className="w-12">Actions</TableHead>
+                    <TableHead>Plan</TableHead>
+                    <TableHead>Amount</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Next Billing</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {allMembers?.map((member) => (
-                    <TableRow key={member.id}>
+                  {organizations
+                    ?.filter((o) => o.plan !== "trial" && o.name?.toLowerCase() !== "my company")
+                    .sort((a, b) => (PLAN_PRICES[b.plan] || 0) - (PLAN_PRICES[a.plan] || 0))
+                    .map((org) => (
+                    <TableRow key={org.id}>
                       <TableCell>
-                        <div>
-                          <p className="font-medium">{member.users?.name || member.users?.first_name || "Unknown"}</p>
-                          <p className="text-sm text-muted-foreground">{member.users?.email}</p>
-                        </div>
+                        <p className="font-medium">{org.name}</p>
                       </TableCell>
-                      <TableCell>{member.organizations?.name}</TableCell>
                       <TableCell>
-                        <Badge variant={member.role === "admin" ? "default" : "outline"}>
-                          {member.role}
+                        <Badge variant={org.billing_status === "active" ? "default" : "outline"} className="capitalize">
+                          {org.plan}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="font-medium">
+                        ${PLAN_PRICES[org.plan] || 0}/mo
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant="outline"
+                          className={
+                            org.billing_status === "active"
+                              ? "border-green-500/30 text-green-600"
+                              : org.billing_status === "past_due"
+                              ? "border-yellow-500/30 text-yellow-600"
+                              : "border-red-500/30 text-red-600"
+                          }
+                        >
+                          {org.billing_status === "active" ? "Active" : org.billing_status === "past_due" ? "Past Due" : "Canceled"}
                         </Badge>
                       </TableCell>
                       <TableCell className="text-muted-foreground">
-                        {format(new Date(member.created_at), "MMM d, yyyy")}
-                      </TableCell>
-                      <TableCell>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setDeleteTarget({ 
-                            type: "member", 
-                            id: member.id, 
-                            name: `${member.users?.email} from ${member.organizations?.name}` 
-                          })}
-                        >
-                          <Trash2 className="h-4 w-4 text-destructive" />
-                        </Button>
+                        {org.current_period_end
+                          ? format(new Date(org.current_period_end), "MMM d, yyyy")
+                          : "—"}
                       </TableCell>
                     </TableRow>
                   ))}
+                  {organizations?.filter((o) => o.plan !== "trial" && o.name?.toLowerCase() !== "my company").length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
+                        No paying organizations yet
+                      </TableCell>
+                    </TableRow>
+                  )}
                 </TableBody>
               </Table>
             </CardContent>

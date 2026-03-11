@@ -14,6 +14,7 @@ const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 const BEDROCK_MODEL_ID = Deno.env.get("BEDROCK_MODEL_ID") || "us.anthropic.claude-opus-4-6-v1";
 const SERP_API_KEY = Deno.env.get("SERP_API_KEY");
 const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY");
+const HUNTER_API_KEY = Deno.env.get("HUNTER_API_KEY");
 
 const aws = new AwsClient({
   accessKeyId: AWS_ACCESS_KEY_ID,
@@ -117,7 +118,343 @@ function extractEmailsFromText(text: string): string[] {
   });
 }
 
+// ── Multi-Source Discovery: HN, Product Hunt, Reddit ──
+// These functions search free APIs and return ScrapedPage[] format
+// so they feed directly into the existing extraction pipeline.
+
+async function searchHackerNews(
+  keywords: string[],
+  maxResults: number = 10
+): Promise<ScrapedPage[]> {
+  const pages: ScrapedPage[] = [];
+  const hnStart = Date.now();
+  const HN_BUDGET_MS = 15_000; // 15 seconds max for HN
+  try {
+    // Algolia HN search API (free, no key needed)
+    for (const keyword of keywords.slice(0, 2)) {
+      if (Date.now() - hnStart > HN_BUDGET_MS) break;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      const url = `https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(keyword)}&tags=story&hitsPerPage=${Math.min(maxResults, 10)}`;
+      let res;
+      try { res = await fetch(url, { signal: controller.signal }); } catch { clearTimeout(timeout); continue; }
+      clearTimeout(timeout);
+      if (!res.ok) continue;
+      const data = await res.json();
+
+      for (const hit of (data.hits || []).slice(0, 3)) {
+        if (Date.now() - hnStart > HN_BUDGET_MS) break;
+        const commentUrl = `https://news.ycombinator.com/item?id=${hit.objectID}`;
+
+        // Scrape the linked article for contact info
+        if (hit.url) {
+          const content = await fetchPageContent(hit.url);
+          const emails = extractEmailsFromText(content);
+          if (content.length > 100 || emails.length > 0) {
+            pages.push({
+              url: hit.url,
+              title: hit.title || "",
+              snippet: `HN story by ${hit.author || "unknown"} (${hit.points || 0} points). ${hit.title}`,
+              content: content.slice(0, 10000),
+              emails_found: emails,
+            });
+          }
+        }
+
+        // Also scrape the HN comment thread for people discussing the topic
+        const commentContent = await fetchPageContent(commentUrl);
+        const commentEmails = extractEmailsFromText(commentContent);
+        if (commentContent.length > 200) {
+          pages.push({
+            url: commentUrl,
+            title: `HN Discussion: ${hit.title || ""}`,
+            snippet: `Hacker News discussion with ${hit.num_comments || 0} comments. Author: ${hit.author || "unknown"}`,
+            content: commentContent.slice(0, 10000),
+            emails_found: commentEmails,
+          });
+        }
+      }
+      await new Promise(r => setTimeout(r, 200));
+    }
+  } catch (err) {
+    console.error("HN search error:", err);
+  }
+  return pages;
+}
+
+async function searchProductHunt(
+  keywords: string[],
+  maxResults: number = 10
+): Promise<ScrapedPage[]> {
+  const pages: ScrapedPage[] = [];
+  const phStart = Date.now();
+  const PH_BUDGET_MS = 15_000; // 15 seconds max for PH
+  try {
+    // Product Hunt doesn't have a free search API, but we can search via Google
+    // and scrape PH pages which have maker profiles with contact info
+    for (const keyword of keywords.slice(0, 2)) {
+      if (Date.now() - phStart > PH_BUDGET_MS) break;
+      const query = `site:producthunt.com ${keyword} maker`;
+      if (!SERP_API_KEY) break;
+
+      const url = `https://serpapi.com/search.json?q=${encodeURIComponent(query)}&api_key=${SERP_API_KEY}&num=5`;
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const data = await res.json();
+
+      for (const result of (data.organic_results || []).slice(0, 5)) {
+        const pageUrl = result.link || "";
+        const content = await fetchPageContent(pageUrl);
+        const emails = extractEmailsFromText(content);
+        if (content.length > 100 || emails.length > 0) {
+          pages.push({
+            url: pageUrl,
+            title: result.title || "",
+            snippet: `Product Hunt: ${result.snippet || ""}`,
+            content: content.slice(0, 10000),
+            emails_found: emails,
+          });
+        }
+      }
+      await new Promise(r => setTimeout(r, 500));
+    }
+  } catch (err) {
+    console.error("PH search error:", err);
+  }
+  return pages;
+}
+
+async function searchReddit(
+  keywords: string[],
+  maxResults: number = 10
+): Promise<ScrapedPage[]> {
+  const pages: ScrapedPage[] = [];
+  const redditStart = Date.now();
+  const REDDIT_BUDGET_MS = 15_000; // 15 seconds max for Reddit
+  try {
+    // Reddit JSON API (free, no key needed, append .json to any URL)
+    for (const keyword of keywords.slice(0, 2)) {
+      if (Date.now() - redditStart > REDDIT_BUDGET_MS) break;
+      const url = `https://www.reddit.com/search.json?q=${encodeURIComponent(keyword)}&sort=relevance&limit=${Math.min(maxResults, 10)}&t=year`;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      let res;
+      try { res = await fetch(url, { headers: { "User-Agent": "MoraBot/1.0" }, signal: controller.signal }); } catch { clearTimeout(timeout); continue; }
+      clearTimeout(timeout);
+      if (!res.ok) continue;
+      const data = await res.json();
+
+      const posts = data?.data?.children || [];
+      for (const post of posts.slice(0, 3)) {
+        if (Date.now() - redditStart > REDDIT_BUDGET_MS) break;
+        const d = post.data;
+        if (!d || d.is_self === false) continue; // skip link-only posts
+
+        const postUrl = `https://www.reddit.com${d.permalink}`;
+        const selfText = d.selftext || "";
+        const title = d.title || "";
+        const author = d.author || "";
+        const subreddit = d.subreddit || "";
+
+        // Combine post content with comments
+        let fullContent = `Title: ${title}\nAuthor: u/${author}\nSubreddit: r/${subreddit}\n\n${selfText}`;
+
+        // Fetch comments for the post (with timeout)
+        try {
+          const commentsUrl = `https://www.reddit.com${d.permalink}.json?limit=20`;
+          const cController = new AbortController();
+          const cTimeout = setTimeout(() => cController.abort(), 5000);
+          const commentsRes = await fetch(commentsUrl, {
+            headers: { "User-Agent": "MoraBot/1.0" },
+            signal: cController.signal,
+          });
+          clearTimeout(cTimeout);
+          if (commentsRes.ok) {
+            const commentsData = await commentsRes.json();
+            const comments = commentsData?.[1]?.data?.children || [];
+            for (const c of comments.slice(0, 15)) {
+              if (c.data?.body) {
+                fullContent += `\n\nComment by u/${c.data.author || "unknown"}:\n${c.data.body}`;
+              }
+            }
+          }
+        } catch { /* comments fetch failed, continue with post content */ }
+
+        const emails = extractEmailsFromText(fullContent);
+
+        pages.push({
+          url: postUrl,
+          title: `Reddit: ${title}`,
+          snippet: `r/${subreddit} by u/${author}. ${selfText.slice(0, 200)}`,
+          content: fullContent.slice(0, 10000),
+          emails_found: emails,
+        });
+      }
+      await new Promise(r => setTimeout(r, 1000)); // Reddit rate limits are strict
+    }
+  } catch (err) {
+    console.error("Reddit search error:", err);
+  }
+  return pages;
+}
+
+// Run all multi-source discovery in parallel, returns combined ScrapedPage[]
+async function runMultiSourceDiscovery(
+  hypotheses: Hypothesis[],
+  emit: (data: any) => void,
+  logActivity?: (step: string, message: string, detail?: any) => void
+): Promise<ScrapedPage[]> {
+  // Build search keywords from hypotheses
+  const keywords: string[] = [];
+  for (const h of hypotheses) {
+    // Use first signal and description as search terms
+    keywords.push(h.description);
+    if (h.signals.length > 0) keywords.push(h.signals[0]);
+  }
+  // Deduplicate and limit
+  const uniqueKeywords = [...new Set(keywords)].slice(0, 6);
+
+  emit({ type: "status", text: `Searching HN, Product Hunt, and Reddit for "${uniqueKeywords[0]}"...` });
+
+  // Run all three sources in parallel
+  const [hnPages, phPages, redditPages] = await Promise.all([
+    searchHackerNews(uniqueKeywords),
+    searchProductHunt(uniqueKeywords),
+    searchReddit(uniqueKeywords),
+  ]);
+
+  const totalPages = hnPages.length + phPages.length + redditPages.length;
+
+  if (logActivity) {
+    logActivity("source_discovery", `Multi-source discovery: ${hnPages.length} HN pages, ${phPages.length} PH pages, ${redditPages.length} Reddit pages`, {
+      hn_pages: hnPages.length,
+      ph_pages: phPages.length,
+      reddit_pages: redditPages.length,
+      keywords: uniqueKeywords,
+    });
+  }
+
+  if (totalPages > 0) {
+    emit({ type: "status", text: `Multi-source discovery found ${totalPages} pages (HN: ${hnPages.length}, PH: ${phPages.length}, Reddit: ${redditPages.length})` });
+  }
+
+  return [...hnPages, ...phPages, ...redditPages];
+}
+
+// ── Hunter.io Email Enrichment ──
+// For prospects without email, try Hunter.io domain search + email finder
+
+async function enrichWithHunter(
+  prospects: ExtractedProspect[],
+  emit: (data: any) => void,
+  logActivity?: (step: string, message: string, detail?: any) => void
+): Promise<number> {
+  if (!HUNTER_API_KEY || prospects.length === 0) return 0;
+
+  let found = 0;
+  const maxAttempts = Math.min(prospects.length, 10);
+
+  for (let i = 0; i < maxAttempts; i++) {
+    const p = prospects[i];
+    if (!p.company) continue;
+
+    try {
+      // Extract domain from company name or website
+      let domain = "";
+      if (p.website_url) {
+        try { domain = new URL(p.website_url).hostname; } catch {}
+      }
+      if (!domain && p.source_url) {
+        try {
+          const srcHost = new URL(p.source_url).hostname;
+          // Only use source_url domain if it looks like a company site (not a directory)
+          if (!srcHost.includes("linkedin") && !srcHost.includes("producthunt") &&
+              !srcHost.includes("ycombinator") && !srcHost.includes("reddit") &&
+              !srcHost.includes("twitter") && !srcHost.includes("google")) {
+            domain = srcHost;
+          }
+        } catch {}
+      }
+
+      // Try email finder first (name + domain)
+      if (domain) {
+        const firstName = p.name.split(" ")[0];
+        const lastName = p.name.split(" ").slice(1).join(" ");
+        const finderUrl = `https://api.hunter.io/v2/email-finder?domain=${encodeURIComponent(domain)}&first_name=${encodeURIComponent(firstName)}&last_name=${encodeURIComponent(lastName)}&api_key=${HUNTER_API_KEY}`;
+
+        const res = await fetch(finderUrl);
+        if (res.ok) {
+          const data = await res.json();
+          const email = data?.data?.email;
+          const score = data?.data?.score || 0;
+
+          if (email && score >= 70) {
+            p.email = email;
+            p.email_source_location = `Hunter.io (${score}% confidence)`;
+            found++;
+
+            if (logActivity) {
+              logActivity("prospect_harvester", `Hunter.io found email for ${p.name}: ${email} (${score}% confidence)`, {
+                source: "hunter.io",
+                domain,
+                score,
+              });
+            }
+            continue;
+          }
+        }
+      }
+
+      // Fallback: domain search by company name
+      if (!domain) {
+        const domainSearchUrl = `https://api.hunter.io/v2/domain-search?company=${encodeURIComponent(p.company)}&api_key=${HUNTER_API_KEY}&limit=5`;
+        const res = await fetch(domainSearchUrl);
+        if (res.ok) {
+          const data = await res.json();
+          const emails = data?.data?.emails || [];
+          domain = data?.data?.domain || "";
+
+          // Try to match by name
+          const nameParts = p.name.toLowerCase().split(" ");
+          const matched = emails.find((e: any) => {
+            const full = `${e.first_name || ""} ${e.last_name || ""}`.toLowerCase();
+            return nameParts.some((part: string) => full.includes(part));
+          });
+
+          if (matched?.value) {
+            p.email = matched.value;
+            p.email_source_location = `Hunter.io domain search (${matched.confidence || 0}% confidence)`;
+            found++;
+
+            if (logActivity) {
+              logActivity("prospect_harvester", `Hunter.io domain search found email for ${p.name}: ${matched.value}`, {
+                source: "hunter.io",
+                domain,
+                confidence: matched.confidence,
+              });
+            }
+          }
+        }
+      }
+
+      await new Promise(r => setTimeout(r, 200)); // Rate limit
+    } catch (err) {
+      console.error("Hunter.io error:", err);
+    }
+  }
+
+  return found;
+}
+
 // ── Company profile + ICP types ──
+
+interface GuidedAnswers {
+  what_building?: string;
+  problem_solved?: string;
+  who_has_problem?: string;
+  online_signals?: string;
+  customer_vibe?: string;
+}
 
 interface CompanyProfile {
   company_description: string;
@@ -131,6 +468,13 @@ interface CompanyProfile {
   icp_keywords: string[];
   preferred_sources: string[];
   messaging_notes: string;
+  // Problem-first fields
+  problem_statement: string;
+  audience_description: string;
+  signals: string[];
+  // Guided questions mode
+  settings_mode?: string;
+  guided_answers?: GuidedAnswers;
 }
 
 interface ICPSettings {
@@ -166,7 +510,7 @@ interface ScrapedPage {
 
 interface ExtractedProspect {
   name: string;
-  email: string;
+  email: string | null;           // null if no email found — prospect is still kept
   email_source_location: string;
   company: string;
   title: string;
@@ -175,21 +519,84 @@ interface ExtractedProspect {
   summary: string;
   confidence_score: number;
   linkedin_url: string | null;
+  twitter_url?: string | null;
+  website_url?: string | null;
+  intent_signals?: Array<{ type: string; text: string; source_url: string }>;
 }
 
-// ── Step 1: ICP Parsing & Planning ──
+// ── Step 1: Hypothesis Generator ──
+// Problem-first: instead of requiring rigid ICP fields, the system generates
+// hypotheses about who might experience the user's problem, and what signals
+// to search for. Works across any industry without hardcoded role buckets.
 
-function buildICPPrompt(companyProfile: CompanyProfile | null): string {
-  let system = `You are a campaign planning AI for cold email outreach. Given the user's request, extract a structured Ideal Customer Profile (ICP) and campaign plan.
+interface Hypothesis {
+  id: string;
+  description: string;       // "SaaS founders struggling with outbound sales"
+  audience_type: string;      // "startup founders", "marketing agencies", "dentists"
+  signals: string[];          // observable behaviors to search for
+  search_angles: string[];    // different ways to find these people
+}
+
+interface HypothesisGeneratorOutput {
+  hypotheses: Hypothesis[];
+  icp: any;                   // backward compat: still emit ICP for downstream
+  desired_person_count: number;
+  campaign_structure: any;
+  relevance_signals: string[];
+  required_fields: string[];
+  personalization_fields: string[];
+  needs_clarification?: boolean;
+  clarification_question?: string;
+}
+
+function buildHypothesisPrompt(companyProfile: CompanyProfile | null): string {
+  let system = `You are a prospect discovery strategist. Your job is to think deeply about WHO might need the user's product/service and HOW to find them on the internet.
+
+You are problem-first, not title-first. Instead of matching rigid job titles, you identify people who are EXPERIENCING a specific problem based on observable signals.
 
 You MUST respond with ONLY valid JSON (no explanation, no markdown) in this exact format:
 {
+  "hypotheses": [
+    {
+      "id": "h1",
+      "description": "Startup founders who recently launched and need their first customers",
+      "audience_type": "startup founders",
+      "signals": [
+        "posted about launching a product",
+        "asking how to find first customers",
+        "discussing cold outreach strategies",
+        "recently listed on Product Hunt or Hacker News"
+      ],
+      "search_angles": [
+        "Product Hunt launches in [relevant category]",
+        "Hacker News Show HN posts about [relevant topic]",
+        "blog posts about struggling with customer acquisition",
+        "startup directories and accelerator cohort pages",
+        "founders discussing outbound sales on forums"
+      ]
+    },
+    {
+      "id": "h2",
+      "description": "Growth marketers evaluating cold email tools",
+      "audience_type": "growth marketers",
+      "signals": [
+        "comparing email outreach tools",
+        "asking about cold email deliverability",
+        "writing about lead generation tactics"
+      ],
+      "search_angles": [
+        "comparison articles for cold email tools",
+        "marketing forums discussing outreach",
+        "conference speaker lists for growth marketing events"
+      ]
+    }
+  ],
   "icp": {
-    "roles": ["CEO", "Founder", "VP Sales"],
+    "roles": ["Founder", "Growth Marketer"],
     "industries": ["SaaS", "B2B Tech"],
-    "company_size": "10-200 employees",
-    "geography": "US",
-    "other_criteria": "Series A or later"
+    "company_size": "1-200 employees",
+    "geography": "",
+    "other_criteria": ""
   },
   "desired_person_count": 20,
   "campaign_structure": {
@@ -197,45 +604,76 @@ You MUST respond with ONLY valid JSON (no explanation, no markdown) in this exac
     "tone": "${companyProfile?.tone || "professional"}",
     "key_value_prop": "${companyProfile?.key_message || ""}"
   },
-  "relevance_signals": ["recently raised funding", "hiring for engineering roles"],
-  "required_fields": ["email", "name", "company", "role"],
-  "personalization_fields": ["company_name", "role", "recent_news", "company_product"]
+  "relevance_signals": ["launched product recently", "discussing outreach challenges"],
+  "required_fields": ["name", "company"],
+  "personalization_fields": ["company_name", "role", "recent_activity", "signal_context"]
 }
 
-Rules:
-- Extract SPECIFIC roles, industries, company sizes from the user's request
+CRITICAL RULES:
+- Generate 3-5 DIVERSE hypotheses about who might have the problem described
+- Each hypothesis must have a DIFFERENT audience type — cast a wide net
+- Signals must be OBSERVABLE behaviors (things people do publicly online), not internal states
+- Search angles must be CONCRETE: specific places and search strategies to find these people
+- Think beyond job titles. A dentist, a SaaS founder, and a real estate agent might all struggle with "getting more customers" — your hypotheses should capture this diversity when the problem is broad
+- If the user's request is extremely vague with no problem or audience implied, set "needs_clarification": true
 - If the user mentions a number of prospects, use that as desired_person_count (default 20, max 50)
-- If the user's request is vague or too broad, set "needs_clarification": true and "clarification_question": "your question"
-- NEVER make up criteria the user didn't mention — only extract what's explicitly stated or clearly implied
-- Do NOT assume "Founder" or "CEO" as default roles. Only include roles the user explicitly specified or that appear in the organization's saved ICP settings.
-- If the organization has ICP settings defined (below), use them as defaults/fallbacks for any criteria the user doesn't specify
-- Include "relevance_signals" in the ICP: specific signals that indicate a prospect matches (e.g. "recently raised funding", "hiring for X role", "published about Y topic")
-- Include "required_fields" listing which data points are mandatory for a valid prospect (always include "email")`;
+- The "icp" field is for backward compatibility — populate it from your hypotheses
+- "required_fields" should be ["name", "company"] — email is found separately, do NOT require it upfront
+- For "relevance_signals", combine the best signals from all hypotheses`;
 
   if (companyProfile) {
-    system += `\n\nThe user's company context (use this for email tone and value prop):
+    // Guided mode: user gave casual conversational answers — richest signal source
+    const ga = companyProfile.guided_answers;
+    if (companyProfile.settings_mode === "guided" && ga) {
+      system += `\n\nThe user answered these questions conversationally (infer ICP, problem, and signals from these):`;
+      if (ga.what_building) system += `\n- What are you building? "${ga.what_building}"`;
+      if (ga.problem_solved) system += `\n- What problem does it solve? "${ga.problem_solved}"`;
+      if (ga.who_has_problem) system += `\n- Who has this problem? "${ga.who_has_problem}"`;
+      if (ga.online_signals) system += `\n- What would someone say online? "${ga.online_signals}"`;
+      if (ga.customer_vibe) system += `\n- What vibe do customers have? "${ga.customer_vibe}"`;
+      if (companyProfile.key_message) system += `\n- Key message: ${companyProfile.key_message}`;
+      system += `\n- Preferred tone: ${companyProfile.tone || "professional"}`;
+    } else {
+      // Manual mode: structured fields
+      system += `\n\nThe user's company context:
 - What the company does: ${companyProfile.company_description}
 - Problem it solves: ${companyProfile.problem_solved}
 - Preferred tone: ${companyProfile.tone}
 - Key message: ${companyProfile.key_message}`;
+    }
 
-    // Include ICP settings as defaults
+    // Include any existing ICP settings as hints (not requirements)
     const hasICP = companyProfile.target_roles?.length || companyProfile.target_industries?.length || companyProfile.company_size;
     if (hasICP) {
-      system += `\n\nOrganization's saved ICP settings (use as defaults when user doesn't specify):`;
-      if (companyProfile.target_roles?.length) system += `\n- Target roles: ${companyProfile.target_roles.join(", ")}`;
-      if (companyProfile.target_industries?.length) system += `\n- Target industries: ${companyProfile.target_industries.join(", ")}`;
+      system += `\n\nThe organization has some saved audience hints (use as starting points, not hard constraints):`;
+      if (companyProfile.target_roles?.length) system += `\n- Typical roles: ${companyProfile.target_roles.join(", ")}`;
+      if (companyProfile.target_industries?.length) system += `\n- Typical industries: ${companyProfile.target_industries.join(", ")}`;
       if (companyProfile.company_size) system += `\n- Company size: ${companyProfile.company_size}`;
       if (companyProfile.company_stage) system += `\n- Company stage: ${companyProfile.company_stage}`;
       if (companyProfile.icp_keywords?.length) system += `\n- Keywords: ${companyProfile.icp_keywords.join(", ")}`;
-      if (companyProfile.messaging_notes) system += `\n- Messaging notes: ${companyProfile.messaging_notes}`;
+    }
+
+    // Problem-first fields
+    if (companyProfile.problem_statement) {
+      system += `\n- Core problem they solve: ${companyProfile.problem_statement}`;
+    }
+    if (companyProfile.audience_description) {
+      system += `\n- Who typically has this problem: ${companyProfile.audience_description}`;
+    }
+    if (companyProfile.signals?.length) {
+      system += `\n- Known signals of this problem: ${companyProfile.signals.join(", ")}`;
     }
   }
 
   return system;
 }
 
-async function stepParseICP(userPrompt: string, sequenceData: any | null, orgContext: any, companyProfile: CompanyProfile | null): Promise<any> {
+async function stepGenerateHypotheses(
+  userPrompt: string,
+  sequenceData: any | null,
+  orgContext: any,
+  companyProfile: CompanyProfile | null
+): Promise<HypothesisGeneratorOutput> {
   let contextStr = `User's request: ${userPrompt}
 
 Organization context:
@@ -250,225 +688,129 @@ Steps:
 ${sequenceData.steps.map((s: any, i: number) => `  Step ${i + 1}: Subject: "${s.subject}" | Body preview: "${s.body?.slice(0, 150)}..."`).join("\n")}`;
   }
 
-  return await invokeBedrockJSON(buildICPPrompt(companyProfile), contextStr);
+  return await invokeBedrockJSON(buildHypothesisPrompt(companyProfile), contextStr);
 }
 
-// ── Step 2: Search Query Generation (ICP-driven, dynamic sources) ──
+// Backward compat alias — downstream code still calls stepParseICP
+async function stepParseICP(userPrompt: string, sequenceData: any | null, orgContext: any, companyProfile: CompanyProfile | null): Promise<any> {
+  return await stepGenerateHypotheses(userPrompt, sequenceData, orgContext, companyProfile);
+}
 
-function buildQueryGenPrompt(icpSettings: ICPSettings | null): string {
-  let system = `You are a search query specialist. Given an ICP (Ideal Customer Profile), generate targeted Google search queries that will find REAL people matching the criteria WITH their email addresses visible on the page.
+// ── Step 2: Signal-Based Discovery ──
+// Replaces hardcoded role buckets with hypothesis-driven query generation.
+// The LLM decides the best search strategy for ANY industry based on the
+// hypotheses generated in Step 1, not a switch/case on job titles.
+
+function buildSignalQueryPrompt(): string {
+  return `You are an expert internet researcher. Given a set of hypotheses about WHO might have a specific problem, generate Google search queries that will find these people.
+
+You are signal-first: you search for BEHAVIORS and EVIDENCE that someone has the problem, not just job titles.
 
 You MUST respond with ONLY valid JSON (no explanation, no markdown):
 {
   "queries": [
-    "query one here",
-    "query two here"
+    {
+      "query": "the google search query",
+      "hypothesis_id": "h1",
+      "strategy": "brief description of what this query targets"
+    }
   ]
 }
 
-Rules:
-- Generate 6-10 highly targeted queries
-- At LEAST half your queries MUST include terms like "email", "contact", "@", "get in touch"
-- Each query should target a different angle to maximize unique results with emails
-- DO NOT generate generic queries — every query should reflect the specific ICP criteria
-- Target pages that list people WITH contact info: team pages, directories, association listings, speaker lists, staff pages
+QUERY GENERATION RULES:
 
-SOURCE PRIORITY — choose sources that match the target ICP:`;
+1. SIGNAL QUERIES (at least 40% of total): Search for people EXPRESSING the problem
+   Examples: "struggling with cold outreach", "need more customers for my startup", "how to find leads"
+   These find people actively discussing the problem in forums, blogs, social media
 
-  // Dynamic source selection based on ICP roles/industries
-  // Uses CUMULATIVE matching — all matching role buckets contribute sources
-  const roles = icpSettings?.target_roles || [];
-  const industries = icpSettings?.target_industries || [];
-  const rolesLower = roles.map(r => r.toLowerCase());
-  const industriesLower = industries.map(i => i.toLowerCase());
+2. DIRECTORY QUERIES (at least 30% of total): Search for lists/directories of the target audience
+   Examples: "top SaaS founders 2025 email", "startup accelerator cohort directory contact"
+   These find curated pages with multiple prospects and contact info
 
-  const isFounder = rolesLower.some(r => ["founder", "ceo", "cofounder", "co-founder", "startup founder"].includes(r));
-  const isAccountant = rolesLower.some(r => ["accountant", "cpa", "bookkeeper", "tax preparer", "auditor"].includes(r));
-  const isDoctor = rolesLower.some(r => ["doctor", "physician", "surgeon", "dentist", "therapist", "psychiatrist", "md", "do"].includes(r));
-  const isLawyer = rolesLower.some(r => ["lawyer", "attorney", "partner", "legal counsel", "solicitor", "barrister"].includes(r));
-  const isRealEstate = rolesLower.some(r => ["realtor", "real estate agent", "broker", "property manager"].includes(r));
-  const isFinance = rolesLower.some(r => ["financial advisor", "wealth manager", "financial planner", "cfo"].includes(r));
-  const isMarketing = rolesLower.some(r => ["marketing director", "cmo", "head of marketing", "vp marketing", "marketing manager"].includes(r));
-  const isSales = rolesLower.some(r => ["vp sales", "head of sales", "sales director", "account executive", "sdr"].includes(r));
+3. CONTACT DISCOVERY QUERIES (at least 20% of total): Include "email", "contact", "@" to find pages with contact info
+   Examples: "marketing agency founders team page email", "[industry] association member directory"
+   These find pages where contact information is publicly listed
 
-  let hasRoleMatch = false;
+4. COMMUNITY QUERIES (remaining): Search within specific communities
+   Examples: "site:producthunt.com [topic]", "site:news.ycombinator.com [topic]"
+   These find people active in relevant communities
 
-  if (isFounder) {
-    hasRoleMatch = true;
-    system += `
-
-FOR FOUNDERS/CEOs:
-- Startup roundups and "startups to watch" articles with founder bios
-- Accelerator and incubator cohort/batch directories
-- Company team/about pages with founder contact info
-- Founder blogs and Substack posts with author bios and emails
-- Conference speaker lists with bios
-- Podcast guest lists and interviews with contact links
-- Newsletter features and curated startup lists`;
-  }
-  if (isAccountant) {
-    hasRoleMatch = true;
-    system += `
-
-FOR ACCOUNTANTS/CPAs:
-- Accounting firm directories and "top firms" articles
-- CPA association member directories (AICPA, state CPA societies)
-- Firm team/staff pages with partner emails
-- Accounting industry publications and author bios
-- "Best accounting firms" and "top CPAs" roundup articles
-- Local business directories with accounting firm listings`;
-  }
-  if (isDoctor) {
-    hasRoleMatch = true;
-    system += `
-
-FOR DOCTORS/PHYSICIANS:
-- Clinic and practice directories
-- Hospital staff/physician directory pages
-- Medical association member listings
-- "Top doctors" and "best physicians" articles
-- Health system provider search pages
-- Medical conference speaker lists
-- Practice/clinic team pages with contact info`;
-  }
-  if (isLawyer) {
-    hasRoleMatch = true;
-    system += `
-
-FOR LAWYERS/ATTORNEYS:
-- Law firm directories and team pages
-- Bar association member listings and attorney search tools
-- "Top lawyers" and "best law firms" articles
-- Legal industry publications and author bios
-- Super Lawyers / Martindale-Hubbell / Avvo directory listings
-- Practice area specialist directories`;
-  }
-  if (isRealEstate) {
-    hasRoleMatch = true;
-    system += `
-
-FOR REAL ESTATE:
-- Real estate brokerage team pages
-- Realtor association directories
-- "Top agents" roundup articles
-- Real estate industry event speaker lists
-- Local MLS agent directories`;
-  }
-  if (isFinance) {
-    hasRoleMatch = true;
-    system += `
-
-FOR FINANCE/ADVISORS:
-- Financial advisory firm team pages
-- CFP Board / FINRA advisor lookup directories
-- "Top financial advisors" articles
-- Wealth management firm directories
-- Financial planning association listings`;
-  }
-  if (isMarketing || isSales) {
-    hasRoleMatch = true;
-    system += `
-
-FOR MARKETING/SALES LEADERS:
-- Company leadership/team pages
-- Marketing/Sales conference speaker lists
-- Industry publication contributor bios
-- "Top CMOs" / "Sales leaders" roundup articles
-- SaaS company about pages with leadership emails
-- Podcast guest lists for marketing/sales podcasts`;
-  }
-
-  if (!hasRoleMatch) {
-    system += `
-
-FOR THIS ICP:
-- Industry-specific directories and association member listings
-- Company team/about pages with contact info
-- Industry conference speaker directories
-- Professional association listings
-- "Top [role]" and "[industry] leaders" roundup articles
-- Company staff pages with visible emails
-- Industry publication author/contributor bios`;
-  }
-
-  // Universal high-quality source categories for ALL roles
-  system += `
-
-UNIVERSAL HIGH-VALUE SOURCES (use for any ICP):
-- Blog posts and newsletters that list or feature multiple people (Substack roundups, curated lists, "people to follow" posts)
-- Industry-specific resource pages and curated directories
-- Conference and event speaker pages with bios and contact info
-- "Top X in [industry/city/role]" roundup articles
-- Podcast guest pages with bios and contact links
-- Award winners and recognition lists (e.g., "40 under 40", "rising stars in [field]")
-- GitHub profile pages with visible emails (for technical roles)
-- University faculty/alumni directories (for academic or research roles)
-- Community and forum member pages with profiles
-
-PRIORITIZE pages that:
-- List MULTIPLE people with names, roles, and visible email addresses
-- Are curated directories, roundups, or association listings
-- Have structured contact information (not just social media links)
-- Feature recent, active professionals (not outdated pages)
-
-Prioritize curated lists, roundups, and directory pages far more than individual company websites. A single "top 50 founders in [city]" article is worth more than 50 individual company homepages.
-
-DEPRIORITIZE:
-- Homepages without specific contact info
-- Pages with only social media links (LinkedIn, Twitter)
-- Unstructured blog content without author contact info
-- Pages behind login walls
-- Generic company landing pages`;
-
-  if (icpSettings?.preferred_sources?.length) {
-    system += `\n\nThe user has specified preferred source types: ${icpSettings.preferred_sources.join(", ")}. Prioritize these.`;
-  }
-
-  if (icpSettings?.icp_keywords?.length) {
-    system += `\n\nInclude these problem/industry keywords in your queries: ${icpSettings.icp_keywords.join(", ")}`;
-  }
-
-  return system;
+CRITICAL:
+- Generate 15-20 queries total, spread across all hypotheses
+- Each query must target a DIFFERENT angle — no redundant queries
+- DO NOT use generic queries like "founders" or "CEO list" — every query must connect to the specific problem or signal
+- Prioritize pages that list MULTIPLE people (directories, roundups, team pages) over individual profiles
+- For local/service businesses (dentists, lawyers, etc.), include city/region terms and association directories
+- For tech/SaaS, include community sites (HN, PH, IndieHackers) and startup lists
+- For agencies/consultants, include portfolio sites, case study pages, and industry award lists
+- Include year terms (2024, 2025) for freshness
+- Use site: operators for high-value sites (linkedin.com, twitter.com, producthunt.com, etc.)
+- Generate queries for DIFFERENT geographic areas if the audience is global`;
 }
 
-async function stepGenerateQueries(icp: any, icpSettings: ICPSettings | null, existingProspects?: ExtractedProspect[]): Promise<string[]> {
-  const system = buildQueryGenPrompt(icpSettings);
-  let message = `Generate search queries for this ICP:\n${JSON.stringify(icp, null, 2)}`;
+async function stepGenerateQueries(icp: any, icpSettings: ICPSettings | null, existingProspects?: ExtractedProspect[], hypotheses?: Hypothesis[]): Promise<string[]> {
+  const system = buildSignalQueryPrompt();
+
+  let message = "";
+
+  // If we have hypotheses from Agent 1, use them as the primary input
+  if (hypotheses && hypotheses.length > 0) {
+    message += `HYPOTHESES about who has this problem:\n`;
+    for (const h of hypotheses) {
+      message += `\n${h.id}: "${h.description}"
+  Audience: ${h.audience_type}
+  Signals to look for: ${h.signals.join(", ")}
+  Search angles: ${h.search_angles.join(", ")}\n`;
+    }
+  }
+
+  // Still include ICP for backward compat (when hypotheses aren't available)
+  if (icp) {
+    message += `\nICP context:\n${JSON.stringify(icp, null, 2)}`;
+  }
 
   if (icpSettings) {
-    message += `\n\nOrganization's ICP settings:
-- Target roles: ${icpSettings.target_roles.length ? icpSettings.target_roles.join(", ") : "Any"}
-- Target industries: ${icpSettings.target_industries.length ? icpSettings.target_industries.join(", ") : "Any"}
-- Company size: ${icpSettings.company_size || "Any"}
-- Company stage: ${icpSettings.company_stage || "Any"}
-- Keywords: ${icpSettings.icp_keywords.length ? icpSettings.icp_keywords.join(", ") : "None"}`;
+    const parts: string[] = [];
+    if (icpSettings.target_roles.length) parts.push(`Roles: ${icpSettings.target_roles.join(", ")}`);
+    if (icpSettings.target_industries.length) parts.push(`Industries: ${icpSettings.target_industries.join(", ")}`);
+    if (icpSettings.company_size) parts.push(`Company size: ${icpSettings.company_size}`);
+    if (icpSettings.icp_keywords.length) parts.push(`Keywords: ${icpSettings.icp_keywords.join(", ")}`);
+    if (icpSettings.preferred_sources?.length) parts.push(`Preferred sources: ${icpSettings.preferred_sources.join(", ")}`);
+    if (parts.length > 0) {
+      message += `\n\nAdditional audience hints:\n${parts.join("\n")}`;
+    }
   }
 
   if (existingProspects && existingProspects.length > 0) {
-    message += `\n\nI already found these prospects — generate DIFFERENT queries to find MORE people (avoid duplicate companies/domains):\n`;
+    message += `\n\nAlready found these prospects — generate DIFFERENT queries to find MORE people:\n`;
     message += existingProspects.slice(0, 10).map(p => `- ${p.name} at ${p.company}`).join("\n");
   }
 
   const result = await invokeBedrockJSON(system, message);
-  return result.queries || [];
+
+  // Handle both formats: array of objects (new) or array of strings (legacy)
+  const queries = result.queries || [];
+  return queries.map((q: any) => typeof q === "string" ? q : q.query);
 }
 
 // ── Step 3: Iterative Search — batched SerpAPI + scraping + extraction ──
 
 function buildExtractionPrompt(icpSettings: ICPSettings | null): string {
-  let system = `You are a prospect extraction AI. Given scraped web page content and a target ICP, extract REAL people from the page.
+  let system = `You are a prospect extraction AI. Given scraped web page content and target criteria, extract REAL people from the page.
 
 CRITICAL RULES — FOLLOW EXACTLY:
 1. ONLY extract people whose information is ACTUALLY on the page. NEVER invent or hallucinate names, emails, companies, or titles.
 2. For email: ONLY include an email if it literally appears in the page content or in the emails_found_on_page list. If no email is visible, set email to null.
-3. ONLY RETURN PROSPECTS WHO HAVE AN EMAIL ADDRESS. Skip anyone without a visible email — they are useless for outreach.
+3. DO NOT skip prospects just because they lack an email. If someone clearly matches the target criteria, include them with email set to null. Good prospects without email are still valuable — they can be contacted via LinkedIn, Twitter, or their website.
 4. Look carefully at the emails_found_on_page list — match each email to a person mentioned on the page (e.g. john@ likely belongs to "John Smith" on the same page).
-5. For each person, provide evidence_of_fit: a direct quote or paraphrase from the page proving they match the ICP.
-6. Set confidence_score based on how much real data you found:
-   - 0.9+: Name, email, company, title all found on page, strong ICP match
-   - 0.7-0.9: Name + company + email found, decent ICP match
-   - Below 0.7: Don't include — not enough data
-7. For the summary field, include: who they are, what they do, why they match the ICP, and the page where they were found.`;
+5. For each person, provide evidence_of_fit: a direct quote or paraphrase from the page proving they match the criteria. Also include intent_signals if the person showed observable behavior related to the problem (posted about it, asked about tools, launched something relevant).
+6. Set confidence_score based on how much real data you found AND how strong the evidence is:
+   - 0.9+: Name + company + title + email + strong signal/evidence of fit
+   - 0.8-0.9: Name + company + email OR name + company + strong evidence without email
+   - 0.7-0.8: Name + company + decent evidence
+   - Below 0.6: Don't include — not enough data
+7. For the summary field, include: who they are, what they do, why they match, and the page where they were found.
+8. Extract linkedin_url if any LinkedIn profile URL appears on the page. Extract twitter_url if a Twitter/X profile URL appears.`;
 
   if (icpSettings) {
     const hasRoles = icpSettings.target_roles.length > 0;
@@ -492,16 +834,38 @@ You MUST respond with ONLY valid JSON:
       "email_source_location": "Found in team page contact section",
       "company": "TechCorp",
       "title": "CEO",
+      "linkedin_url": "https://linkedin.com/in/johnsmith",
+      "twitter_url": null,
       "source_url": "https://techcorp.com/team",
       "evidence_of_fit": "Listed as CEO of TechCorp, a B2B SaaS company with 50 employees",
       "summary": "John Smith is CEO of TechCorp, a B2B SaaS company. Matches ICP as a SaaS founder. Found on the TechCorp team page.",
-      "confidence_score": 0.92
+      "confidence_score": 0.92,
+      "intent_signals": [
+        { "type": "post", "text": "Tweeted about struggling with outbound sales", "source_url": "https://twitter.com/johnsmith/status/123" }
+      ]
+    },
+    {
+      "name": "Jane Doe",
+      "email": null,
+      "email_source_location": "",
+      "company": "StartupXYZ",
+      "title": "Founder",
+      "linkedin_url": "https://linkedin.com/in/janedoe",
+      "twitter_url": "https://twitter.com/janedoe",
+      "source_url": "https://example.com/startups-to-watch",
+      "evidence_of_fit": "Featured as founder of StartupXYZ, recently launched and seeking growth",
+      "summary": "Jane Doe is the founder of StartupXYZ. No email found but strong LinkedIn presence.",
+      "confidence_score": 0.82,
+      "intent_signals": []
     }
   ]
 }
 
-If the page has NO relevant prospects WITH email addresses, return: { "prospects": [] }
-NEVER return a prospect without an email address.`;
+IMPORTANT:
+- Include prospects WITHOUT email if they have strong evidence of fit. Set email to null.
+- Prospects WITH email should be scored higher (they are more actionable).
+- If a page has NO relevant prospects at all, return: { "prospects": [] }
+- intent_signals should only include OBSERVABLE behaviors found on the page (posts, comments, launches, hiring signals). Leave empty array if none found.`;
 
   return system;
 }
@@ -525,11 +889,11 @@ async function searchAndScrape(
       if (!res.ok) continue;
       const data = await res.json();
 
-      const results = (data.organic_results || []).slice(0, 6);
+      const results = (data.organic_results || []).slice(0, 8);
 
-      // Scrape pages in parallel (batch of 4)
-      for (let i = 0; i < results.length; i += 4) {
-        const batch = results.slice(i, i + 4);
+      // Scrape pages in parallel (batch of 5)
+      for (let i = 0; i < results.length; i += 5) {
+        const batch = results.slice(i, i + 5);
         const scrapedBatch = await Promise.all(
           batch.map(async (result: any) => {
             const pageUrl = result.link || "";
@@ -621,29 +985,39 @@ async function extractProspectsFromPages(
       );
 
       for (const p of result.prospects || []) {
-        if (!p.name || !p.company || !p.email) continue;
+        if (!p.name || !p.company) continue; // Name + company are minimum required
 
-        const emailKey = p.email.toLowerCase();
         const nameKey = p.name.toLowerCase();
-        if (seenEmails.has(emailKey) || seenNames.has(nameKey)) continue;
+        if (seenNames.has(nameKey)) continue;
 
-        // Validate email was actually found on the page
-        const sourcePage = batch.find((pg) => pg.url === p.source_url) || batch[0];
-        const emailFoundOnPage = sourcePage.emails_found.some(
-          (e) => e.toLowerCase() === p.email.toLowerCase()
-        ) || sourcePage.content.toLowerCase().includes(p.email.toLowerCase());
+        // If email is provided, validate it was actually found on the page
+        let validatedEmail: string | null = null;
+        if (p.email) {
+          const emailKey = p.email.toLowerCase();
+          if (seenEmails.has(emailKey)) continue;
 
-        if (!emailFoundOnPage) continue; // Skip hallucinated emails
+          const sourcePage = batch.find((pg) => pg.url === p.source_url) || batch[0];
+          const emailFoundOnPage = sourcePage.emails_found.some(
+            (e) => e.toLowerCase() === emailKey
+          ) || sourcePage.content.toLowerCase().includes(emailKey);
 
-        seenEmails.add(emailKey);
+          if (emailFoundOnPage) {
+            validatedEmail = p.email;
+            seenEmails.add(emailKey);
+          }
+          // If email wasn't on page, don't discard the prospect — just null the email
+        }
+
         seenNames.add(nameKey);
 
-        const linkedinUrl = p.source_url?.includes("linkedin.com/in/") ? p.source_url : null;
+        // Extract linkedin URL from the prospect data or source URL
+        const linkedinUrl = p.linkedin_url
+          || (p.source_url?.includes("linkedin.com/in/") ? p.source_url : null);
 
         extracted.push({
           name: p.name,
-          email: p.email,
-          email_source_location: p.email_source_location || "Found on page",
+          email: validatedEmail,
+          email_source_location: validatedEmail ? (p.email_source_location || "Found on page") : "",
           company: p.company,
           title: p.title || "",
           source_url: p.source_url || batch[0]?.url || "",
@@ -651,6 +1025,8 @@ async function extractProspectsFromPages(
           summary: p.summary || `${p.title || ""} at ${p.company}`,
           confidence_score: p.confidence_score || 0.7,
           linkedin_url: linkedinUrl,
+          twitter_url: p.twitter_url || null,
+          intent_signals: p.intent_signals || [],
         });
       }
     } catch (err) {
@@ -663,7 +1039,8 @@ async function extractProspectsFromPages(
 
 // Iterative search: keeps searching in batches until enough prospects found or budget exhausted
 // Has a wall-clock guard to stop gracefully before Supabase edge function timeout (~150s)
-const SEARCH_WALL_CLOCK_MS = 55_000; // 55 seconds — leaves ~95s for drafting + DB writes
+const SEARCH_WALL_CLOCK_MS = 80_000; // 80 seconds — leaves ~70s for drafting + DB writes
+const PIPELINE_WALL_CLOCK_MS = 140_000; // 140 seconds — hard limit before Supabase kills the function (~150s)
 
 async function stepIterativeSearch(
   icp: any,
@@ -674,7 +1051,8 @@ async function stepIterativeSearch(
   supabase: any,
   campaignId: string,
   excludedEmails: Set<string> = new Set(),
-  logActivity?: (step: string, message: string, detail?: any) => void
+  logActivity?: (step: string, message: string, detail?: any) => void,
+  hypotheses?: Hypothesis[]
 ): Promise<{ prospects: ExtractedProspect[]; stats: { queriesUsed: number; pagesScraped: number; stoppedReason: string } }> {
   if (!SERP_API_KEY) {
     emit({ type: "status", text: "No SERP_API_KEY configured — cannot perform research." });
@@ -690,14 +1068,14 @@ async function stepIterativeSearch(
   let queriesUsed = 0;
   let totalPagesScraped = 0;
 
-  // Generate initial batch of queries
-  emit({ type: "status", text: `Generating targeted search queries to find ${desiredCount} prospects with emails...` });
-  let allQueries = await stepGenerateQueries(icp, icpSettings);
+  // Generate initial batch of queries — now hypothesis-driven
+  emit({ type: "status", text: `Generating signal-based search queries from ${hypotheses?.length || 0} hypotheses (target: ${desiredCount} prospects)...` });
+  let allQueries = await stepGenerateQueries(icp, icpSettings, undefined, hypotheses);
   if (logActivity) {
-    logActivity("source_discovery", `Generated ${allQueries.length} search strategies`, { queries: allQueries });
+    logActivity("source_discovery", `Generated ${allQueries.length} signal-based search strategies`, { queries: allQueries });
   }
   let queryIndex = 0;
-  const BATCH_SIZE = 3;
+  const BATCH_SIZE = 4;
 
   while (validProspects.length < desiredCount && queriesUsed < maxSearchQueries) {
     // Wall-clock guard: stop gracefully if running too long
@@ -711,7 +1089,7 @@ async function stepIterativeSearch(
     // If we've used all queries and need more, generate additional ones
     if (queryBatch.length === 0) {
       emit({ type: "status", text: "Generating additional search queries..." });
-      const moreQueries = await stepGenerateQueries(icp, icpSettings, validProspects);
+      const moreQueries = await stepGenerateQueries(icp, icpSettings, validProspects, hypotheses);
       allQueries.push(...moreQueries);
       queryBatch = allQueries.slice(queryIndex, queryIndex + BATCH_SIZE);
       if (queryBatch.length === 0) break; // LLM couldn't generate more
@@ -796,9 +1174,9 @@ CRITICAL RULES — FOLLOW EXACTLY:
 - Write like a real human. Short, direct, no fluff, no marketing speak.
 - 3-5 sentences max per email body.
 - Subject line should feel like it came from a real person (not salesy, no caps, no exclamation marks).
-- Use the prospect's evidence_of_fit and summary to personalize the opening.
+- Use the prospect's evidence_of_fit, summary, AND intent_signals to personalize the opening. Intent signals are the strongest personalization — reference specific posts, launches, hiring activity, or complaints you discovered.
 - One clear CTA per email.
-- For follow-ups (step 2+), add new value or a different angle. NEVER "just bumping this" or "following up."
+- For follow-ups (step 2+), add new value or a different angle. NEVER "just bumping this" or "following up." Use different intent signals for each follow-up if available.
 - NEVER use placeholders like {{first_name}}, {{company}}, [Name], [Company], {insert name here}, [Insert X], {Name}, etc.
 - NEVER use brackets [] or curly braces {} around any name, company, or variable. These are NOT templates.
 - Each email is for a SPECIFIC person — use their ACTUAL name, company, and title directly in the text.
@@ -815,23 +1193,40 @@ PERSONALIZATION & QUALITY RULES:
 
 `;
 
-  // Company context
-  if (companyProfile && companyProfile.company_description) {
-    system += `ABOUT THE SENDER'S COMPANY (use this for all emails):
+  // Company context — adapt to guided vs manual mode
+  if (companyProfile) {
+    const ga = companyProfile.guided_answers;
+    if (companyProfile.settings_mode === "guided" && ga && (ga.what_building || ga.problem_solved)) {
+      system += `ABOUT THE SENDER'S COMPANY (use this for all emails):
+- What they're building: ${ga.what_building || ""}
+- Problem they solve: ${ga.problem_solved || ""}
+- Who has this problem: ${ga.who_has_problem || ""}
+- Key message: ${companyProfile.key_message || ""}
+- Tone: ${companyProfile.tone || "professional"}
+
+IMPORTANT: Use this company info accurately. Do NOT make up features or benefits not listed above.
+`;
+    } else if (companyProfile.company_description) {
+      system += `ABOUT THE SENDER'S COMPANY (use this for all emails):
 - What we do: ${companyProfile.company_description}
-- Problem we solve: ${companyProfile.problem_solved}
+- Problem we solve: ${companyProfile.problem_solved || companyProfile.problem_statement || ""}
+${companyProfile.problem_statement ? `- Problem statement: ${companyProfile.problem_statement}` : ""}
+${companyProfile.audience_description ? `- Target audience: ${companyProfile.audience_description}` : ""}
 - Key message: ${companyProfile.key_message}
 - Tone: ${companyProfile.tone}
 ${companyProfile.messaging_notes ? `- Messaging notes: ${companyProfile.messaging_notes}` : ""}
 
 IMPORTANT: Use this company info accurately. Do NOT make up features or benefits not listed above.
 `;
+    }
+  }
   }
 
   // Template mode is handled separately via direct replacement — this prompt is only for auto mode
   system += `\nEMAIL MODE: AUTO-GENERATED
 Write original personalized emails from scratch using:
-- The prospect's research summary and evidence_of_fit for personalization
+- The prospect's research summary, evidence_of_fit, and intent_signals for personalization
+- Intent signals (posts, launches, hiring, complaints) are GOLD for openers — reference what they actually said or did
 - The sender's company description and value proposition for the pitch
 - Tone preference: ${companyProfile?.tone || plan.campaign_structure?.tone || "professional"}
 
@@ -923,6 +1318,8 @@ async function stepDraftAuto(
       title: p.title,
       evidence_of_fit: p.evidence_of_fit,
       summary: p.summary,
+      intent_signals: p.intent_signals || [],
+      linkedin_url: p.linkedin_url || null,
     }));
 
     try {
@@ -1491,6 +1888,8 @@ You MUST respond with ONLY valid JSON:
     const stream = new ReadableStream({
       async start(controller) {
         const emit = (data: any) => controller.enqueue(encoder.encode(sseEvent(data)));
+        const pipelineStart = Date.now();
+        const hasTimeRemaining = (minMs: number) => (Date.now() - pipelineStart) < (PIPELINE_WALL_CLOCK_MS - minMs);
 
         try {
           // ── Gather org context ──
@@ -1518,16 +1917,18 @@ You MUST respond with ONLY valid JSON:
             icp_keywords: companyProfileRow.icp_keywords || [],
             preferred_sources: companyProfileRow.preferred_sources || [],
             messaging_notes: companyProfileRow.messaging_notes || "",
+            problem_statement: companyProfileRow.problem_statement || "",
+            audience_description: companyProfileRow.audience_description || "",
+            signals: companyProfileRow.signals || [],
+            settings_mode: companyProfileRow.settings_mode || "guided",
+            guided_answers: companyProfileRow.guided_answers || {},
           } : null;
 
-          // Settings gate: require ICP and company settings before running
-          const missingSettings: string[] = [];
-          if (!companyProfile?.company_description) missingSettings.push("company description");
-          if (!companyProfile?.tone) missingSettings.push("tone");
-          if (!companyProfile?.target_roles?.length) missingSettings.push("target roles");
-          if (!companyProfile?.target_industries?.length) missingSettings.push("target industries");
-          if (missingSettings.length > 0) {
-            emit({ type: "error", error: "Please complete your ICP and company settings before running a campaign." });
+          // Settings gate: accept either guided answers or company description
+          const hasGuidedSetup = companyProfile?.guided_answers?.what_building || companyProfile?.guided_answers?.problem_solved;
+          const hasManualSetup = companyProfile?.company_description;
+          if (!hasGuidedSetup && !hasManualSetup) {
+            emit({ type: "error", error: "Please fill out your Settings before running a campaign. Mora needs to know what you're building to find the right prospects." });
             emit({ type: "done" });
             controller.close();
             return;
@@ -1573,18 +1974,28 @@ You MUST respond with ONLY valid JSON:
           // Emit the user's prompt so the UI can display it
           emit({ type: "user_prompt", text: userPrompt });
 
-          // ══ Agent 1: ICP Interpreter ══
-          emit({ type: "step", step: "icp_interpreter", message: "Interpreting ICP filters from your request..." });
+          // ══ Agent 1: Hypothesis Generator ══
+          emit({ type: "step", step: "icp_interpreter", message: "Analyzing your request and generating discovery hypotheses..." });
 
-          const plan = await stepParseICP(userPrompt, sequenceData, orgContext, companyProfile);
+          const plan = await stepGenerateHypotheses(userPrompt, sequenceData, orgContext, companyProfile);
           const rawDesired = plan.desired_person_count || 20;
           const desiredCount = Math.min(rawDesired, maxProspects);
 
+          // Extract hypotheses for downstream agents
+          const hypotheses: Hypothesis[] = plan.hypotheses || [];
+
           if (plan.needs_clarification) {
-            emit({ type: "step", step: "clarification", message: plan.clarification_question || "Could you provide more details about your target audience?" });
+            emit({ type: "step", step: "clarification", message: plan.clarification_question || "Could you describe the problem your product solves and who might experience it?" });
             emit({ type: "done" });
             controller.close();
             return;
+          }
+
+          // Log hypotheses
+          if (hypotheses.length > 0) {
+            for (const h of hypotheses) {
+              emit({ type: "status", text: `Hypothesis: ${h.description}` });
+            }
           }
 
           // Create campaign record
@@ -1604,6 +2015,16 @@ You MUST respond with ONLY valid JSON:
               max_prospects: desiredCount,
               email_mode: resolvedEmailMode,
               send_mode: resolvedSendMode,
+              problem_context: {
+                hypotheses: hypotheses.map(h => ({
+                  id: h.id,
+                  description: h.description,
+                  audience_type: h.audience_type,
+                  signals: h.signals,
+                })),
+                problem: companyProfile?.problem_solved || companyProfile?.problem_statement || "",
+                audience: companyProfile?.audience_description || "",
+              },
             })
             .select("id")
             .single();
@@ -1630,16 +2051,28 @@ You MUST respond with ONLY valid JSON:
             }
           };
 
-          logActivity("icp_interpreter", "ICP filters parsed", {
+          // Store hypotheses in DB
+          if (hypotheses.length > 0) {
+            const hypothesisInserts = hypotheses.map(h => ({
+              campaign_id: campaign.id,
+              hypothesis: h.description,
+              search_queries: h.search_angles || [],
+              source_type: "web",
+              status: "pending",
+            }));
+            await supabase.from("agent_hypotheses").insert(hypothesisInserts);
+          }
+
+          logActivity("icp_interpreter", "Hypotheses generated", {
+            hypothesis_count: hypotheses.length,
+            hypotheses: hypotheses.map(h => h.description),
             roles: plan.icp?.roles || [],
             industries: plan.icp?.industries || [],
-            company_type: plan.icp?.company_size || "",
             relevance_signals: plan.relevance_signals || [],
-            required_fields: plan.required_fields || ["email", "name", "company", "role"],
           });
 
-          // ══ Agent 2: Source Discovery ══
-          emit({ type: "step", step: "source_discovery", message: "Generating search strategies based on ICP..." });
+          // ══ Agent 2: Signal-Based Discovery ══
+          emit({ type: "step", step: "source_discovery", message: `Generating signal-based search strategies from ${hypotheses.length || "your"} hypotheses...` });
 
           // Fetch emails already used in previous campaigns (for this org) + existing customers to avoid duplicates
           const [{ data: prevCampaigns }, { data: existingCustomers }] = await Promise.all([
@@ -1676,8 +2109,14 @@ You MUST respond with ONLY valid JSON:
             emitAndLog({ type: "status", text: `Excluding ${excludedEmails.size} emails already in your pipeline or previous campaigns.` });
           }
 
-          // ══ Agent 3: Prospect Harvester ══
-          emit({ type: "step", step: "prospect_harvester", message: `Harvesting prospects from discovered sources (target: ${desiredCount})...` });
+          // ══ Agent 3: Prospect Harvester — PARALLEL discovery ══
+          // Run SerpAPI search AND multi-source discovery (HN/Reddit/PH) in parallel
+          emit({ type: "step", step: "prospect_harvester", message: `Harvesting prospects from web + community sources in parallel (target: ${desiredCount})...` });
+
+          // Start multi-source discovery in parallel with main search (don't wait for SerpAPI to finish)
+          const multiSourcePromise = hypotheses.length > 0
+            ? runMultiSourceDiscovery(hypotheses, emitAndLog, logActivity)
+            : Promise.resolve([] as ScrapedPage[]);
 
           const { prospects: extractedProspects, stats: searchStats } = await stepIterativeSearch(
             plan.icp || plan,
@@ -1688,15 +2127,66 @@ You MUST respond with ONLY valid JSON:
             supabase,
             campaign.id,
             excludedEmails,
-            logActivity
+            logActivity,
+            hypotheses
           );
 
-          logActivity("prospect_harvester", `Harvesting complete: ${searchStats.queriesUsed} searches, ${extractedProspects.length} of ${desiredCount} prospects found`, {
+          logActivity("prospect_harvester", `SerpAPI harvesting: ${searchStats.queriesUsed} searches, ${extractedProspects.length} of ${desiredCount} prospects found`, {
             queries_used: searchStats.queriesUsed,
             pages_scraped: searchStats.pagesScraped,
             prospects_found: extractedProspects.length,
             stopped_reason: searchStats.stoppedReason,
           });
+
+          // ══ Merge Multi-Source Discovery results ══
+          // Only process if we have time remaining (need ~50s for qualification + drafting + DB writes)
+          if (hasTimeRemaining(50_000)) {
+            const multiSourcePages = await multiSourcePromise;
+            if (multiSourcePages.length > 0 && hasTimeRemaining(45_000)) {
+              // Build seen sets from existing prospects to avoid duplicates
+              const msSeenEmails = new Set<string>(excludedEmails);
+              const msSeenNames = new Set<string>();
+              for (const p of extractedProspects) {
+                if (p.email) msSeenEmails.add(p.email.toLowerCase());
+                msSeenNames.add(p.name.toLowerCase());
+              }
+
+              // Limit pages to process based on remaining time
+              const maxMultiPages = hasTimeRemaining(60_000) ? multiSourcePages.length : Math.min(multiSourcePages.length, 3);
+              const pagesToProcess = multiSourcePages.slice(0, maxMultiPages);
+
+              emit({ type: "status", text: `Extracting prospects from ${pagesToProcess.length} community source pages...` });
+              const multiProspects = await extractProspectsFromPages(
+                pagesToProcess,
+                plan.icp || plan,
+                icpSettings,
+                msSeenEmails,
+                msSeenNames,
+                emitAndLog
+              );
+
+              // Tag discovery source and merge
+              for (const p of multiProspects) {
+                const url = p.source_url || "";
+                if (url.includes("ycombinator") || url.includes("hn.algolia")) {
+                  (p as any).discovery_source = "hackernews";
+                } else if (url.includes("producthunt")) {
+                  (p as any).discovery_source = "producthunt";
+                } else if (url.includes("reddit")) {
+                  (p as any).discovery_source = "reddit";
+                }
+                extractedProspects.push(p);
+              }
+
+              if (multiProspects.length > 0) {
+                emitAndLog({ type: "status", text: `Community sources added ${multiProspects.length} new prospects (total: ${extractedProspects.length}).` });
+              }
+            } else if (multiSourcePages.length > 0) {
+              emitAndLog({ type: "status", text: `Skipping community source extraction — not enough time remaining.` });
+            }
+          } else {
+            emitAndLog({ type: "status", text: `Skipping multi-source merge — time budget tight.` });
+          }
 
           // ══ Agent 4: Qualification ══
           emit({ type: "step", step: "qualification", message: `Qualifying ${extractedProspects.length} prospects against ICP...` });
@@ -1723,7 +2213,7 @@ You MUST respond with ONLY valid JSON:
 
           // ── Handle no prospects ──
           if (extractedProspects.length === 0) {
-            const msg = `Could not find any prospects with verified email addresses matching your ICP after ${searchStats.queriesUsed} searches. Try targeting industries or roles where contact info is more publicly available.`;
+            const msg = `Could not find any prospects matching your criteria after ${searchStats.queriesUsed} searches. Try describing the problem differently or broadening the audience.`;
             emitAndLog({ type: "step", step: "clarification", message: msg });
             await supabase
               .from("agent_campaigns")
@@ -1734,24 +2224,141 @@ You MUST respond with ONLY valid JSON:
             return;
           }
 
+          // Split prospects: those with email (actionable) vs without (surfaced for manual outreach)
+          const prospectsWithEmail = extractedProspects.filter(p => p.email);
+          const prospectsWithoutEmail = extractedProspects.filter(p => !p.email);
+
+          if (prospectsWithoutEmail.length > 0) {
+            emitAndLog({ type: "status", text: `Found ${prospectsWithEmail.length} prospects with email + ${prospectsWithoutEmail.length} without email (surfaced with LinkedIn/profile links).` });
+          }
+
+          // ══ Contact Discovery Agent ══
+          // For prospects without email, attempt to find contact info via targeted search.
+          // This runs within time budget — stops if wall clock is getting tight.
+          if (prospectsWithoutEmail.length > 0 && SERP_API_KEY && hasTimeRemaining(40_000)) {
+            const contactSearchStart = Date.now();
+            const CONTACT_SEARCH_BUDGET_MS = 15_000; // 15 seconds max for contact discovery
+            const maxContactSearches = Math.min(prospectsWithoutEmail.length, 5); // max 5 searches
+            let contactFound = 0;
+
+            emit({ type: "step", step: "prospect_harvester", message: `Searching for contact info for ${prospectsWithoutEmail.length} prospects without email...` });
+
+            for (let ci = 0; ci < maxContactSearches; ci++) {
+              if (Date.now() - contactSearchStart > CONTACT_SEARCH_BUDGET_MS) break;
+
+              const p = prospectsWithoutEmail[ci];
+              const contactQuery = `"${p.name}" "${p.company}" email contact`;
+
+              try {
+                const serpUrl = `https://serpapi.com/search.json?q=${encodeURIComponent(contactQuery)}&api_key=${SERP_API_KEY}&num=3`;
+                const serpRes = await fetch(serpUrl);
+                if (!serpRes.ok) continue;
+                const serpData = await serpRes.json();
+
+                const contactResults = (serpData.organic_results || []).slice(0, 2);
+                for (const result of contactResults) {
+                  const pageUrl = result.link || "";
+                  if (/\.(pdf|jpg|png|gif|mp4|zip)$/i.test(pageUrl)) continue;
+
+                  const content = await fetchPageContent(pageUrl);
+                  const emails = extractEmailsFromText(content);
+
+                  if (emails.length > 0) {
+                    // Try to match an email to this person (check if their name parts appear near the email)
+                    const nameParts = p.name.toLowerCase().split(" ");
+                    const matchedEmail = emails.find(e => {
+                      const localPart = e.split("@")[0].toLowerCase();
+                      return nameParts.some(part => localPart.includes(part));
+                    }) || emails[0]; // fallback to first email on page
+
+                    // Move prospect from no-email to with-email
+                    p.email = matchedEmail;
+                    p.email_source_location = `Found via contact search on ${pageUrl}`;
+
+                    // Update the arrays
+                    const idx = prospectsWithoutEmail.indexOf(p);
+                    if (idx > -1) prospectsWithoutEmail.splice(idx, 1);
+                    prospectsWithEmail.push(p);
+                    contactFound++;
+
+                    logActivity("prospect_harvester", `Found email for ${p.name}: ${matchedEmail}`, {
+                      source: pageUrl,
+                      method: "contact_discovery_search",
+                    });
+                    break; // found email, move to next prospect
+                  }
+                }
+
+                await new Promise(r => setTimeout(r, 300)); // rate limit
+              } catch {
+                // Silent failure — contact discovery is best-effort
+              }
+            }
+
+            if (contactFound > 0) {
+              emitAndLog({ type: "status", text: `Contact discovery found emails for ${contactFound} additional prospects.` });
+            }
+          }
+
+          // ══ Hunter.io Email Enrichment ══
+          // For remaining prospects without email, try Hunter.io as a last resort
+          if (prospectsWithoutEmail.length > 0 && HUNTER_API_KEY && hasTimeRemaining(30_000)) {
+            emit({ type: "status", text: `Trying Hunter.io for ${prospectsWithoutEmail.length} prospects without email...` });
+            const hunterFound = await enrichWithHunter(prospectsWithoutEmail, emitAndLog, logActivity);
+
+            if (hunterFound > 0) {
+              // Move newly enriched prospects to the with-email list
+              const newlyEnriched = prospectsWithoutEmail.filter(p => p.email);
+              for (const p of newlyEnriched) {
+                const idx = prospectsWithoutEmail.indexOf(p);
+                if (idx > -1) prospectsWithoutEmail.splice(idx, 1);
+                prospectsWithEmail.push(p);
+              }
+              emitAndLog({ type: "status", text: `Hunter.io found emails for ${hunterFound} additional prospects.` });
+            }
+          }
+
+          // ══ Introduction Suggestions ══
+          // For strong candidates without email, suggest asking shared connections for introductions
+          if (prospectsWithoutEmail.length > 0 && prospectsWithEmail.length > 0) {
+            for (const noEmail of prospectsWithoutEmail) {
+              if ((noEmail.confidence_score || 0) < 0.8) continue; // only for strong candidates
+              // Find a prospect WITH email at the same company or a closely related one
+              const sameCompany = prospectsWithEmail.find(
+                p => p.company && noEmail.company &&
+                  p.company.toLowerCase() === noEmail.company.toLowerCase() &&
+                  p.name !== noEmail.name
+              );
+              if (sameCompany) {
+                (noEmail as any).introduction_suggestion = {
+                  via_person: sameCompany.name,
+                  via_company: sameCompany.company,
+                  relationship: "same company",
+                  reason: `${sameCompany.name} works at ${sameCompany.company} and may be able to introduce you to ${noEmail.name}.`,
+                };
+              }
+            }
+          }
+
           // ══ Agent 5: Research Summary ══
-          emit({ type: "step", step: "research_summary", message: `Generating research summaries for ${extractedProspects.length} prospects...` });
+          emit({ type: "step", step: "research_summary", message: `Building evidence for ${extractedProspects.length} prospects...` });
 
           // Summaries are already generated per-prospect during extraction (evidence_of_fit + summary fields)
-          // Log each summary for activity trail
           for (const p of extractedProspects) {
-            logActivity("research_summary", `${p.name} — ${p.title} at ${p.company}`, {
+            logActivity("research_summary", `${p.name} — ${p.title} at ${p.company}${p.email ? "" : " (no email)"}`, {
               prospect_name: p.name,
               company: p.company,
               source_url: p.source_url,
               summary: p.summary,
               evidence_of_fit: p.evidence_of_fit,
+              has_email: !!p.email,
+              intent_signals: p.intent_signals || [],
             });
           }
 
-          emitAndLog({ type: "status", text: `Research summaries generated for ${extractedProspects.length} prospects.` });
+          emitAndLog({ type: "status", text: `Evidence built for ${extractedProspects.length} prospects (${prospectsWithEmail.length} with email, ${prospectsWithoutEmail.length} profile-only).` });
 
-          // ── Store prospects ──
+          // ── Store ALL prospects (with and without email) ──
           const prospectInserts = extractedProspects.map((p) => ({
             campaign_id: campaign.id,
             name: p.name,
@@ -1765,19 +2372,41 @@ You MUST respond with ONLY valid JSON:
             evidence_of_fit: p.evidence_of_fit,
             summary: p.summary,
             confidence_score: p.confidence_score,
-            status: "enriched",
+            status: p.email ? "enriched" : "no_email",
             risk_flags: [],
+            discovery_source: (p as any).discovery_source || "web",
+            contact_methods: {
+              ...(p.email ? { email: p.email } : {}),
+              ...(p.linkedin_url ? { linkedin: p.linkedin_url } : {}),
+              ...(p.twitter_url ? { twitter: p.twitter_url } : {}),
+            },
+            intent_signals: p.intent_signals || [],
+            evidence_chain: [
+              {
+                signal: p.evidence_of_fit,
+                source: p.source_url,
+                url: p.source_url,
+                relevance: p.summary,
+              },
+              ...(p.intent_signals || []).map((s: any) => ({
+                signal: s.text,
+                source: s.source_url,
+                url: s.source_url,
+                relevance: s.type,
+              })),
+            ],
             enrichment: {
               evidence_of_fit: p.evidence_of_fit,
               summary: p.summary,
               source_url: p.source_url,
             },
+            ...((p as any).introduction_suggestion ? { introduction_suggestion: (p as any).introduction_suggestion } : {}),
           }));
 
           const { data: insertedProspects, error: prospErr } = await supabase
             .from("agent_prospects")
             .insert(prospectInserts)
-            .select("id, name, email, company, title, linkedin_url, source, source_url, email_source_location, evidence_of_fit, summary, confidence_score, status, risk_flags, enrichment");
+            .select("id, name, email, company, title, linkedin_url, source, source_url, email_source_location, evidence_of_fit, summary, confidence_score, status, risk_flags, enrichment, contact_methods, intent_signals, evidence_chain");
 
           if (prospErr) throw new Error(`Failed to store prospects: ${prospErr.message}`);
 
@@ -1791,23 +2420,32 @@ You MUST respond with ONLY valid JSON:
             prospects: insertedProspects || [],
           });
 
-          // ── Step 4: Email Drafting ──
+          // ── Step 4: Email Drafting (only for prospects with email) ──
           const foundCount = extractedProspects.length;
-          emitAndLog({ type: "step", step: "drafting", message: `Generating personalized emails for ${foundCount} prospects...` });
+          const emailableCount = prospectsWithEmail.length;
+          emitAndLog({ type: "step", step: "drafting", message: `Generating personalized emails for ${emailableCount} prospects with email (${prospectsWithoutEmail.length} surfaced without email)...` });
 
-          // ── Two explicit drafting modes ──
-          let emailDrafts: any[];
-          if (resolvedEmailMode === "template" && sequenceData && sequenceData.steps.length > 0) {
-            // TEMPLATE MODE: use templates word-for-word, only replace placeholders
-            emitAndLog({ type: "status", text: `Using template sequence (${sequenceData.steps.length} steps) — replacing placeholders with prospect data...` });
-            emailDrafts = stepDraftTemplate(extractedProspects, sequenceData);
-          } else {
-            // AUTO-GENERATE MODE: LLM writes original emails using prospect research + company profile
-            emailDrafts = await stepDraftAuto(extractedProspects, companyProfile, plan);
+          // ── Two explicit drafting modes (only for prospects WITH email) ──
+          // Build index mapping: prospectsWithEmail[i] -> insertedProspects DB id
+          const allInserted = insertedProspects || [];
+          const emailProspectDbIds: string[] = [];
+          for (const ip of allInserted) {
+            if (ip.email) emailProspectDbIds.push(ip.id);
           }
 
-          // Store drafts
-          const prospectIds = (insertedProspects || []).map((p: any) => p.id);
+          let emailDrafts: any[];
+          if (emailableCount === 0) {
+            emailDrafts = [];
+            emitAndLog({ type: "status", text: "No prospects with email — skipping email drafting. Prospects are surfaced with profile links for manual outreach." });
+          } else if (resolvedEmailMode === "template" && sequenceData && sequenceData.steps.length > 0) {
+            emitAndLog({ type: "status", text: `Using template sequence (${sequenceData.steps.length} steps) — replacing placeholders with prospect data...` });
+            emailDrafts = stepDraftTemplate(prospectsWithEmail, sequenceData);
+          } else {
+            emailDrafts = await stepDraftAuto(prospectsWithEmail, companyProfile, plan);
+          }
+
+          // Store drafts — map prospect_index to emailProspectDbIds
+          const prospectIds = emailProspectDbIds;
           const followupDelays = reqFollowupSchedule || [0, 3, 7, 14, 21]; // configurable
           const draftNow = new Date();
           const draftInserts = emailDrafts
@@ -1844,7 +2482,7 @@ You MUST respond with ONLY valid JSON:
           // Retry only for auto mode if all drafts were filtered
           if (resolvedEmailMode !== "template" && draftInserts.length === 0 && emailDrafts.length > 0) {
             emitAndLog({ type: "status", text: `Generated ${emailDrafts.length} drafts but all were filtered (contained placeholders). Retrying...` });
-            const retryDrafts = await stepDraftAuto(extractedProspects, companyProfile, plan);
+            const retryDrafts = await stepDraftAuto(prospectsWithEmail, companyProfile, plan);
             const retryInserts = retryDrafts
               .map((d: any) => {
                 const prospectId = prospectIds[d.prospect_index];

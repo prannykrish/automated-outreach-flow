@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Plus, Edit, Trash2, GitBranch, ArrowDown, Clock, Mail } from "lucide-react";
+import { Plus, Edit, Trash2, GitBranch, ArrowDown, Clock, Mail, Folder, ChevronRight, ChevronLeft } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useOnboardingContext } from "@/contexts/OnboardingContext";
 
@@ -93,6 +93,44 @@ export default function Sequences() {
     },
     enabled: !!orgId,
   });
+
+  const { data: templateFolders } = useQuery({
+    queryKey: ["template-folders", orgId],
+    queryFn: async () => {
+      const { data, error } = await (supabase as any)
+        .from("template_folders")
+        .select("*")
+        .eq("organization_id", orgId!)
+        .order("name", { ascending: true });
+      if (error) throw error;
+      return data as { id: string; name: string; parent_folder_id: string | null }[];
+    },
+    enabled: !!orgId,
+  });
+
+  // Folder navigation state for template picker
+  const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
+  const [folderBreadcrumb, setFolderBreadcrumb] = useState<{ id: string | null; name: string }[]>([
+    { id: null, name: "All" },
+  ]);
+
+  const navigateToFolder = (folderId: string | null, folderName: string) => {
+    setCurrentFolderId(folderId);
+    if (folderId === null) {
+      setFolderBreadcrumb([{ id: null, name: "All" }]);
+    } else {
+      const existingIndex = folderBreadcrumb.findIndex((b) => b.id === folderId);
+      if (existingIndex >= 0) {
+        setFolderBreadcrumb(folderBreadcrumb.slice(0, existingIndex + 1));
+      } else {
+        setFolderBreadcrumb([...folderBreadcrumb, { id: folderId, name: folderName }]);
+      }
+    }
+  };
+
+  const currentSubfolders = templateFolders?.filter((f) => f.parent_folder_id === currentFolderId) || [];
+  const currentTemplates = templates?.filter((t) => t.folder_id === currentFolderId) || [];
+  const unfolderedTemplates = templates?.filter((t) => !t.folder_id) || [];
 
   const { data: steps } = useQuery({
     queryKey: ["steps", selectedSequence?.id],
@@ -508,17 +546,80 @@ export default function Sequences() {
                     <label className="text-xs text-muted-foreground">Template</label>
                     <Select
                       value={stepForm.template_id}
-                      onValueChange={(value) => setStepForm({ ...stepForm, template_id: value })}
+                      onValueChange={(value) => {
+                        setStepForm({ ...stepForm, template_id: value });
+                        // Reset folder navigation when a template is selected
+                        setCurrentFolderId(null);
+                        setFolderBreadcrumb([{ id: null, name: "All" }]);
+                      }}
                     >
                       <SelectTrigger>
-                        <SelectValue placeholder="Select a template" />
+                        <SelectValue placeholder="Select a template">
+                          {stepForm.template_id
+                            ? templates?.find((t) => t.id === stepForm.template_id)?.name
+                            : "Select a template"}
+                        </SelectValue>
                       </SelectTrigger>
-                      <SelectContent>
-                        {templates?.map((template) => (
-                          <SelectItem key={template.id} value={template.id}>
-                            {template.name}
-                          </SelectItem>
+                      <SelectContent className="max-h-[300px]">
+                        {/* Breadcrumb navigation */}
+                        {currentFolderId !== null && (
+                          <div
+                            className="flex items-center gap-1 px-2 py-1.5 text-xs text-muted-foreground cursor-pointer hover:bg-accent rounded-sm mb-1"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const parentIndex = folderBreadcrumb.length - 2;
+                              const parent = folderBreadcrumb[parentIndex];
+                              if (parent) navigateToFolder(parent.id, parent.name);
+                            }}
+                          >
+                            <ChevronLeft className="h-3 w-3" />
+                            <span>Back to {folderBreadcrumb[folderBreadcrumb.length - 2]?.name || "All"}</span>
+                          </div>
+                        )}
+
+                        {/* Subfolders in current folder */}
+                        {currentSubfolders.map((folder) => (
+                          <div
+                            key={folder.id}
+                            className="flex items-center gap-2 px-2 py-1.5 text-sm cursor-pointer hover:bg-accent rounded-sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              navigateToFolder(folder.id, folder.name);
+                            }}
+                          >
+                            <Folder className="h-4 w-4 text-muted-foreground" />
+                            <span>{folder.name}</span>
+                            <ChevronRight className="h-3 w-3 ml-auto text-muted-foreground" />
+                          </div>
                         ))}
+
+                        {/* Separator between folders and templates */}
+                        {currentSubfolders.length > 0 && (currentTemplates.length > 0 || (currentFolderId === null && unfolderedTemplates.length > 0)) && (
+                          <div className="h-px bg-border my-1" />
+                        )}
+
+                        {/* Templates in current folder */}
+                        {currentFolderId !== null
+                          ? currentTemplates.map((template) => (
+                              <SelectItem key={template.id} value={template.id}>
+                                {template.name}
+                              </SelectItem>
+                            ))
+                          : /* At root: show unfoldered templates */
+                            unfolderedTemplates.map((template) => (
+                              <SelectItem key={template.id} value={template.id}>
+                                {template.name}
+                              </SelectItem>
+                            ))
+                        }
+
+                        {/* Empty state */}
+                        {currentSubfolders.length === 0 &&
+                          (currentFolderId !== null ? currentTemplates : unfolderedTemplates).length === 0 && (
+                          <p className="px-2 py-3 text-xs text-muted-foreground text-center">
+                            {currentFolderId !== null ? "This folder is empty" : "No templates yet"}
+                          </p>
+                        )}
                       </SelectContent>
                     </Select>
                   </div>

@@ -33,6 +33,7 @@ interface UnifiedEmail {
   html?: string | null;
   textBody?: string | null;
   toEmail?: string | null;
+  inReplyToLogId?: string | null;
 }
 
 interface EmailThread {
@@ -53,12 +54,33 @@ function normalizeSubject(subject: string | null): string {
 }
 
 function groupIntoThreads(emails: UnifiedEmail[]): EmailThread[] {
-  // Group by contact email + normalized subject to keep separate conversations apart
+  // Build a map of outbound email id → thread key for reply linking
+  const outboundKeyMap = new Map<string, string>();
   const threadGroups = new Map<string, UnifiedEmail[]>();
+
+  // First pass: assign thread keys to outbound emails
   for (const e of emails) {
-    const contact = e.contactEmail.toLowerCase();
-    const subjectKey = normalizeSubject(e.subject) || `_no_subject_${e.id}`;
-    const key = `${contact}::${subjectKey}`;
+    if (e.direction === "out") {
+      const contact = e.contactEmail.toLowerCase();
+      const subjectKey = normalizeSubject(e.subject) || "_no_subject";
+      const key = `${contact}::${subjectKey}`;
+      outboundKeyMap.set(e.id, key);
+    }
+  }
+
+  // Second pass: group all emails, using in_reply_to_log_id to link replies to their conversation
+  for (const e of emails) {
+    let key: string;
+
+    if (e.direction === "in" && e.inReplyToLogId && outboundKeyMap.has(e.inReplyToLogId)) {
+      // This inbound email is a reply to a known outbound — use the same thread key
+      key = outboundKeyMap.get(e.inReplyToLogId)!;
+    } else {
+      const contact = e.contactEmail.toLowerCase();
+      const subjectKey = normalizeSubject(e.subject) || "_no_subject";
+      key = `${contact}::${subjectKey}`;
+    }
+
     if (!threadGroups.has(key)) threadGroups.set(key, []);
     threadGroups.get(key)!.push(e);
   }
@@ -70,13 +92,15 @@ function groupIntoThreads(emails: UnifiedEmail[]): EmailThread[] {
     const contactOut = threadEmails.find((e) => e.direction === "out");
     const contactIn = threadEmails.find((e) => e.direction === "in");
     const contactEmail = contactOut?.contactEmail || contactIn?.contactEmail || latest.contactEmail;
+    // Use the first non-empty subject in the thread for display
+    const threadSubject = threadEmails.find((e) => e.subject)?.subject || latest.subject;
 
     threads.push({
       threadKey: key,
       contactEmail,
       contactName: contactOut?.contactName || contactIn?.contactName || latest.contactName,
       lastTimestamp: latest.timestamp,
-      lastSubject: latest.subject,
+      lastSubject: threadSubject,
       emails: threadEmails,
       unreadCount: threadEmails.filter((e) => e.direction === "in" && e.isRead === false).length,
       messageCount: threadEmails.length,
@@ -176,7 +200,7 @@ export default function Inbox() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("inbound_emails")
-        .select("id, from_email, from_name, to_email, subject, html, text_body, customer_id, is_read, created_at")
+        .select("id, from_email, from_name, to_email, subject, html, text_body, customer_id, is_read, created_at, in_reply_to_log_id")
         .eq("organization_id", organizationId!)
         .order("created_at", { ascending: false })
         .limit(200);
@@ -216,6 +240,7 @@ export default function Inbox() {
       textBody: e.text_body,
       customerId: e.customer_id,
       toEmail: e.to_email,
+      inReplyToLogId: e.in_reply_to_log_id,
     })),
   ];
 

@@ -78,55 +78,73 @@ serve(async (req: Request) => {
 
     // Clean up related records (service role bypasses RLS)
 
-    // 1. Remove join requests
+    // 1. Remove join requests where user is the requester
     await supabase
       .from("join_requests")
       .delete()
       .eq("user_id", user_id);
 
-    // 2. Remove from organization_members
+    // 1b. Nullify reviewed_by on join requests where this user reviewed
+    await supabase
+      .from("join_requests")
+      .update({ reviewed_by: null })
+      .eq("reviewed_by", user_id);
+
+    // 2. Nullify invited_by on invitations sent by this user
+    await supabase
+      .from("invitations")
+      .update({ invited_by: null })
+      .eq("invited_by", user_id);
+
+    // 3. Remove from organization_members
     await supabase
       .from("organization_members")
       .delete()
       .eq("user_id", user_id);
 
-    // 2. Nullify user_id on customers (preserve customer data)
+    // 4. Nullify user_id on customers (preserve customer data)
     await supabase
       .from("customers")
       .update({ user_id: null })
       .eq("user_id", user_id);
 
-    // 3. Nullify user_id on email_logs (preserve log history)
+    // 5. Nullify user_id on email_logs (preserve log history)
     await supabase
       .from("email_logs")
       .update({ user_id: null })
       .eq("user_id", user_id);
 
-    // 4. Nullify user_id on email_sequences
+    // 6. Nullify user_id on email_sequences
     await supabase
       .from("email_sequences")
       .update({ user_id: null })
       .eq("user_id", user_id);
 
-    // 5. Nullify user_id on scheduled_sends
+    // 7. Nullify user_id on scheduled_sends
     await supabase
       .from("scheduled_sends")
       .update({ user_id: null })
       .eq("user_id", user_id);
 
-    // 6. Delete template_folders owned by user
+    // 8. Delete template_folders owned by user
     await supabase
       .from("template_folders")
       .delete()
       .eq("user_id", user_id);
 
-    // 7. Nullify user_id on email_templates
+    // 9. Nullify user_id on email_templates
     await supabase
       .from("email_templates")
       .update({ user_id: null })
       .eq("user_id", user_id);
 
-    // 8. Delete from public.users
+    // 10. Nullify user_id on custom_placeholders
+    await supabase
+      .from("custom_placeholders")
+      .update({ user_id: null })
+      .eq("user_id", user_id);
+
+    // 11. Delete from public.users
     const { error: deleteUserError } = await supabase
       .from("users")
       .delete()
@@ -140,7 +158,7 @@ serve(async (req: Request) => {
       );
     }
 
-    // 9. Delete from auth.users (removes login credentials)
+    // 12. Delete from auth.users (removes login credentials)
     const { error: authDeleteError } = await supabase.auth.admin.deleteUser(user_id);
 
     if (authDeleteError) {

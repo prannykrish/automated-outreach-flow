@@ -15,6 +15,8 @@ import NotFound from "./pages/NotFound";
 import OrganizationPage from "@/pages/Organization";
 import AuthPage from "./pages/Auth";
 import Landing from "./pages/Landing";
+import TermsOfService from "./pages/TermsOfService";
+import PrivacyPolicy from "./pages/PrivacyPolicy";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { AgentProvider } from "@/contexts/AgentContext";
 import { CampaignAgentProvider } from "@/contexts/CampaignAgentContext";
@@ -63,6 +65,8 @@ const App = () => (
             <OnboardingProvider>
             <Routes>
               <Route path="/auth" element={<AuthPage />} />
+              <Route path="/terms" element={<TermsOfService />} />
+              <Route path="/privacy" element={<PrivacyPolicy />} />
               <Route path="/onboarding" element={<OnboardingRoute />} />
 
               <Route path="/" element={<HomeRoute />} />

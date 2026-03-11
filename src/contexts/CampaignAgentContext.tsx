@@ -20,6 +20,16 @@ export interface CampaignHistoryItem {
   created_at: string;
 }
 
+export interface GuidedAnswers {
+  what_building: string;
+  problem_solved: string;
+  who_has_problem: string;
+  online_signals: string;
+  customer_vibe: string;
+}
+
+export type SettingsMode = "guided" | "manual";
+
 export interface CompanyProfile {
   id?: string;
   company_description: string;
@@ -33,6 +43,13 @@ export interface CompanyProfile {
   icp_keywords: string[];
   messaging_notes: string;
   preferred_sources: string[];
+  // Problem-first fields (multi-agent redesign)
+  problem_statement: string;
+  audience_description: string;
+  signals: string[];
+  // Guided questions mode
+  settings_mode: SettingsMode;
+  guided_answers: GuidedAnswers;
 }
 
 export type SendMode = "immediate" | "scheduled" | "per_prospect";
@@ -168,6 +185,11 @@ export const CampaignAgentProvider: React.FC<{ children: React.ReactNode }> = ({
           icp_keywords: profile.icp_keywords || [],
           messaging_notes: profile.messaging_notes || "",
           preferred_sources: profile.preferred_sources || [],
+          problem_statement: profile.problem_statement || "",
+          audience_description: profile.audience_description || "",
+          signals: profile.signals || [],
+          settings_mode: profile.settings_mode || "guided",
+          guided_answers: profile.guided_answers || {},
           updated_at: new Date().toISOString(),
         }, { onConflict: "organization_id" });
       if (error) throw error;

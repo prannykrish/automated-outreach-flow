@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { useAgent } from "@/contexts/AgentContext";
-import { useCampaignAgentContext, type CompanyProfile, type EmailMode, type SendMode } from "@/contexts/CampaignAgentContext";
+import { useCampaignAgentContext, type CompanyProfile, type GuidedAnswers, type SettingsMode, type EmailMode, type SendMode } from "@/contexts/CampaignAgentContext";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -34,15 +34,16 @@ import {
   BookTemplate,
   ChevronDown,
   Check,
+  HelpCircle,
 } from "lucide-react";
 
 const STEP_LABELS: Record<string, { label: string; icon: React.ReactNode }> = {
   // Multi-agent pipeline steps
-  icp_interpreter: { label: "Interpreting ICP", icon: <Sparkles className="h-3.5 w-3.5" /> },
-  source_discovery: { label: "Discovering sources", icon: <Search className="h-3.5 w-3.5" /> },
+  icp_interpreter: { label: "Generating hypotheses", icon: <Sparkles className="h-3.5 w-3.5" /> },
+  source_discovery: { label: "Signal-based discovery", icon: <Search className="h-3.5 w-3.5" /> },
   prospect_harvester: { label: "Harvesting prospects", icon: <FileText className="h-3.5 w-3.5" /> },
   qualification: { label: "Qualifying prospects", icon: <Shield className="h-3.5 w-3.5" /> },
-  research_summary: { label: "Generating summaries", icon: <FileText className="h-3.5 w-3.5" /> },
+  research_summary: { label: "Building evidence", icon: <FileText className="h-3.5 w-3.5" /> },
   drafting: { label: "Drafting emails", icon: <Mail className="h-3.5 w-3.5" /> },
   approval: { label: "Ready for approval", icon: <CheckCircle2 className="h-3.5 w-3.5" /> },
   executing: { label: "Sending emails", icon: <Send className="h-3.5 w-3.5" /> },
@@ -94,6 +95,7 @@ export default function MoraCommandBar() {
   const [selectedProspect, setSelectedProspect] = useState<string | null>(null);
   const [emailMode, setEmailMode] = useState<EmailMode>("auto");
   const [showSettings, setShowSettings] = useState(false);
+  const [showPromptHelper, setShowPromptHelper] = useState(false);
   const [profileForm, setProfileForm] = useState<CompanyProfile>({
     company_description: "",
     problem_solved: "",
@@ -106,12 +108,18 @@ export default function MoraCommandBar() {
     icp_keywords: [],
     messaging_notes: "",
     preferred_sources: [],
+    problem_statement: "",
+    audience_description: "",
+    signals: [],
+    settings_mode: "guided",
+    guided_answers: { what_building: "", problem_solved: "", who_has_problem: "", online_signals: "", customer_vibe: "" },
   });
   const [profileDirty, setProfileDirty] = useState(false);
   // Raw text state for comma-separated fields (convert to array on blur)
   const [rawRoles, setRawRoles] = useState("");
   const [rawIndustries, setRawIndustries] = useState("");
   const [rawKeywords, setRawKeywords] = useState("");
+  const [rawSignals, setRawSignals] = useState("");
   const [selectedSequenceId, setSelectedSequenceId] = useState<string | null>(null);
   const [showSequencePicker, setShowSequencePicker] = useState(false);
   const [selectedSenderEmail, setSelectedSenderEmail] = useState<string | null>(null);
@@ -138,6 +146,7 @@ export default function MoraCommandBar() {
   // Sync profile form when loaded from DB
   useEffect(() => {
     if (companyProfile) {
+      const defaultGuided = { what_building: "", problem_solved: "", who_has_problem: "", online_signals: "", customer_vibe: "" };
       setProfileForm({
         company_description: companyProfile.company_description || "",
         problem_solved: companyProfile.problem_solved || "",
@@ -150,11 +159,17 @@ export default function MoraCommandBar() {
         icp_keywords: companyProfile.icp_keywords || [],
         messaging_notes: companyProfile.messaging_notes || "",
         preferred_sources: companyProfile.preferred_sources || [],
+        problem_statement: companyProfile.problem_statement || "",
+        audience_description: companyProfile.audience_description || "",
+        signals: companyProfile.signals || [],
+        settings_mode: companyProfile.settings_mode || "guided",
+        guided_answers: companyProfile.guided_answers ? { ...defaultGuided, ...companyProfile.guided_answers } : defaultGuided,
       });
       setProfileDirty(false);
       setRawRoles((companyProfile.target_roles || []).join(", "));
       setRawIndustries((companyProfile.target_industries || []).join(", "));
       setRawKeywords((companyProfile.icp_keywords || []).join(", "));
+      setRawSignals((companyProfile.signals || []).join(", "));
     }
   }, [companyProfile]);
 
@@ -184,14 +199,11 @@ export default function MoraCommandBar() {
     if (!text || isRunning) return;
     if (emailMode === "template" && !selectedSequenceId) return;
 
-    // Settings gate: require ICP and company settings before running
-    const missingFields: string[] = [];
-    if (!companyProfile?.company_description) missingFields.push("company description");
-    if (!companyProfile?.tone) missingFields.push("tone");
-    if (!companyProfile?.target_roles?.length) missingFields.push("target roles");
-    if (!companyProfile?.target_industries?.length) missingFields.push("target industries");
-    if (missingFields.length > 0) {
-      setSettingsGateError("Please complete your ICP and company settings before running a campaign.");
+    // Settings gate: in guided mode, require at least the first guided answer; in manual mode, require company description
+    const hasGuidedSetup = companyProfile?.guided_answers?.what_building || companyProfile?.guided_answers?.problem_solved;
+    const hasManualSetup = companyProfile?.company_description;
+    if (!hasGuidedSetup && !hasManualSetup) {
+      setSettingsGateError("Please fill out your Settings so Mora knows what you're building and who to find.");
       setShowSettings(true);
       return;
     }
@@ -220,8 +232,16 @@ export default function MoraCommandBar() {
     setProfileDirty(false);
   };
 
-  const updateProfileField = (field: keyof CompanyProfile, value: string | string[]) => {
+  const updateProfileField = (field: keyof CompanyProfile, value: string | string[] | GuidedAnswers | SettingsMode) => {
     setProfileForm((prev) => ({ ...prev, [field]: value }));
+    setProfileDirty(true);
+  };
+
+  const updateGuidedAnswer = (field: keyof GuidedAnswers, value: string) => {
+    setProfileForm((prev) => ({
+      ...prev,
+      guided_answers: { ...prev.guided_answers, [field]: value },
+    }));
     setProfileDirty(true);
   };
 
@@ -244,8 +264,8 @@ export default function MoraCommandBar() {
       />
 
       {/* Always-expanded command bar */}
-      <div className="fixed bottom-0 left-0 right-0 z-50 h-[70vh]">
-        <div className="mx-auto max-w-4xl h-full flex flex-col">
+      <div className="fixed bottom-0 left-0 right-0 z-50 h-[85vh]">
+        <div className="mx-auto max-w-5xl h-full flex flex-col">
           {/* Main content area */}
           <div className="flex-1 min-h-0 rounded-t-2xl border border-b-0 bg-background/95 backdrop-blur-xl shadow-2xl overflow-hidden flex flex-col">
             {/* Header */}
@@ -294,17 +314,70 @@ export default function MoraCommandBar() {
               </div>
             </div>
 
+            {/* Progress bar — visible when agent is running */}
+            {isRunning && (() => {
+              const PIPELINE_STEPS = ["icp_interpreter", "source_discovery", "prospect_harvester", "qualification", "research_summary", "drafting"];
+              const currentIdx = PIPELINE_STEPS.indexOf(currentStep || "");
+              const stepProgress = currentIdx >= 0 ? (currentIdx + 1) / PIPELINE_STEPS.length : 0;
+              // Blend step progress with search stats progress for smoother bar
+              const searchProgress = searchStats ? Math.min(searchStats.prospectsFound / Math.max(searchStats.targetCount, 1), 1) : 0;
+              const progress = currentIdx >= 2 && searchStats
+                ? stepProgress * 0.5 + searchProgress * 0.5
+                : stepProgress;
+              const pct = Math.max(Math.round(progress * 100), 5);
+              const stepLabel = currentStep && STEP_LABELS[currentStep] ? STEP_LABELS[currentStep].label : "Working...";
+              return (
+                <div className="px-4 py-2 border-b bg-muted/10 shrink-0 space-y-1">
+                  <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                    <span className="flex items-center gap-1.5">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      {stepLabel}
+                    </span>
+                    <span>
+                      {searchStats
+                        ? `${searchStats.prospectsFound} of ${searchStats.targetCount} prospects`
+                        : `Step ${Math.max(currentIdx + 1, 1)} of ${PIPELINE_STEPS.length}`
+                      }
+                    </span>
+                  </div>
+                  <div className="w-full h-1.5 rounded-full bg-muted overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-primary transition-all duration-700 ease-out"
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Content */}
             <div className="flex-1 min-h-0 flex overflow-hidden">
               {showSettings ? (
-                /* Company Profile Settings Panel */
+                /* Company Profile Settings Panel — Dual Mode: Guided Questions / Manual ICP */
                 <ScrollArea className="flex-1">
                   <div className="p-6 max-w-lg mx-auto space-y-5">
-                    <div>
-                      <h3 className="text-sm font-semibold mb-1">Company Profile</h3>
-                      <p className="text-xs text-muted-foreground">
-                        This context is used by the AI to write personalized, relevant emails for your campaigns.
-                      </p>
+                    {/* Mode indicator + toggle */}
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h3 className="text-sm font-semibold">Settings</h3>
+                          <p className="text-xs text-muted-foreground">Configure how Mora discovers prospects and writes emails.</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between rounded-lg border p-3 bg-muted/30">
+                        <div className="flex items-center gap-2">
+                          <div className={`h-2 w-2 rounded-full ${profileForm.settings_mode === "guided" ? "bg-green-500" : "bg-blue-500"}`} />
+                          <span className="text-xs font-medium">
+                            Currently using: {profileForm.settings_mode === "guided" ? "Guided Questions" : "Manual ICP"}
+                          </span>
+                        </div>
+                        <button
+                          onClick={() => updateProfileField("settings_mode", profileForm.settings_mode === "guided" ? "manual" : "guided")}
+                          className="text-xs px-3 py-1.5 rounded-md border hover:bg-accent transition-colors"
+                        >
+                          Switch to {profileForm.settings_mode === "guided" ? "Manual ICP" : "Guided"}
+                        </button>
+                      </div>
                     </div>
 
                     {isLoadingProfile ? (
@@ -313,127 +386,270 @@ export default function MoraCommandBar() {
                       </div>
                     ) : (
                       <>
-                        <div className="space-y-1.5">
-                          <Label className="text-xs">What does your company do?</Label>
-                          <Textarea
-                            value={profileForm.company_description}
-                            onChange={(e) => updateProfileField("company_description", e.target.value)}
-                            placeholder="e.g. We build AI-powered sales tools for B2B SaaS companies"
-                            className="text-sm min-h-[60px] resize-none"
-                            rows={2}
-                          />
-                        </div>
+                        {/* ═══ GUIDED MODE ═══ */}
+                        {profileForm.settings_mode === "guided" ? (
+                          <div className="space-y-5">
+                            <p className="text-xs text-muted-foreground">
+                              Answer a few questions and Mora will figure out who to find. You can be casual and vague — the system infers the rest.
+                            </p>
 
-                        <div className="space-y-1.5">
-                          <Label className="text-xs">What problem do you solve?</Label>
-                          <Textarea
-                            value={profileForm.problem_solved}
-                            onChange={(e) => updateProfileField("problem_solved", e.target.value)}
-                            placeholder="e.g. Founders waste hours manually researching prospects and writing cold emails"
-                            className="text-sm min-h-[60px] resize-none"
-                            rows={2}
-                          />
-                        </div>
+                            <div className="space-y-1.5">
+                              <Label className="text-xs font-medium">What are you building?</Label>
+                              <Textarea
+                                value={profileForm.guided_answers.what_building}
+                                onChange={(e) => updateGuidedAnswer("what_building", e.target.value)}
+                                placeholder="e.g. An AI tool that writes cold emails for you"
+                                className="text-sm min-h-[50px] resize-none"
+                                rows={2}
+                              />
+                            </div>
 
-                        <div className="space-y-1.5">
-                          <Label className="text-xs">Email tone</Label>
-                          <div className="flex gap-2">
-                            {["professional", "casual", "friendly", "direct"].map((t) => (
-                              <button
-                                key={t}
-                                onClick={() => updateProfileField("tone", t)}
-                                className={`text-xs px-3 py-1.5 rounded-full border transition-colors capitalize ${
-                                  profileForm.tone === t
-                                    ? "bg-primary text-primary-foreground border-primary"
-                                    : "hover:bg-accent border-muted-foreground/20"
-                                }`}
-                              >
-                                {t}
-                              </button>
-                            ))}
+                            <div className="space-y-1.5">
+                              <Label className="text-xs font-medium">What problem does it solve?</Label>
+                              <Textarea
+                                value={profileForm.guided_answers.problem_solved}
+                                onChange={(e) => updateGuidedAnswer("problem_solved", e.target.value)}
+                                placeholder="e.g. Founders spend hours researching leads and writing emails that don't get replies"
+                                className="text-sm min-h-[50px] resize-none"
+                                rows={2}
+                              />
+                            </div>
+
+                            <div className="space-y-1.5">
+                              <Label className="text-xs font-medium">Who do you think might experience this problem?</Label>
+                              <Textarea
+                                value={profileForm.guided_answers.who_has_problem}
+                                onChange={(e) => updateGuidedAnswer("who_has_problem", e.target.value)}
+                                placeholder="e.g. Solo founders, small sales teams, anyone doing outbound for the first time"
+                                className="text-sm min-h-[50px] resize-none"
+                                rows={2}
+                              />
+                            </div>
+
+                            <div className="space-y-1.5">
+                              <Label className="text-xs font-medium">What would someone say online if they had this problem?</Label>
+                              <Textarea
+                                value={profileForm.guided_answers.online_signals}
+                                onChange={(e) => updateGuidedAnswer("online_signals", e.target.value)}
+                                placeholder='e.g. "How do I find my first customers?", "Cold email is so time-consuming", "Looking for a tool to automate outreach"'
+                                className="text-sm min-h-[50px] resize-none"
+                                rows={2}
+                              />
+                            </div>
+
+                            <div className="space-y-1.5">
+                              <Label className="text-xs font-medium">What kind of vibe or personality do your customers have?</Label>
+                              <Textarea
+                                value={profileForm.guided_answers.customer_vibe}
+                                onChange={(e) => updateGuidedAnswer("customer_vibe", e.target.value)}
+                                placeholder="e.g. Scrappy, growth-minded, technical but not super corporate, active on Twitter"
+                                className="text-sm min-h-[50px] resize-none"
+                                rows={2}
+                              />
+                            </div>
+
+                            {/* Tone + key message (shared between both modes) */}
+                            <div className="pt-4 border-t space-y-4">
+                              <div className="space-y-1.5">
+                                <Label className="text-xs">Email tone</Label>
+                                <div className="flex gap-2">
+                                  {["professional", "casual", "friendly", "direct"].map((t) => (
+                                    <button
+                                      key={t}
+                                      onClick={() => updateProfileField("tone", t)}
+                                      className={`text-xs px-3 py-1.5 rounded-full border transition-colors capitalize ${
+                                        profileForm.tone === t
+                                          ? "bg-primary text-primary-foreground border-primary"
+                                          : "hover:bg-accent border-muted-foreground/20"
+                                      }`}
+                                    >
+                                      {t}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                              <div className="space-y-1.5">
+                                <Label className="text-xs">Key message / value proposition</Label>
+                                <Textarea
+                                  value={profileForm.key_message}
+                                  onChange={(e) => updateProfileField("key_message", e.target.value)}
+                                  placeholder="e.g. Save 10+ hours per week on outreach with AI that finds and writes to your ideal customers"
+                                  className="text-sm min-h-[50px] resize-none"
+                                  rows={2}
+                                />
+                              </div>
+                            </div>
                           </div>
-                        </div>
+                        ) : (
+                          /* ═══ MANUAL ICP MODE ═══ */
+                          <div className="space-y-5">
+                            <p className="text-xs text-muted-foreground">
+                              Full control over your company profile and ICP targeting. All fields are used by the discovery engine and email composer.
+                            </p>
 
-                        <div className="space-y-1.5">
-                          <Label className="text-xs">Key message / value proposition</Label>
-                          <Textarea
-                            value={profileForm.key_message}
-                            onChange={(e) => updateProfileField("key_message", e.target.value)}
-                            placeholder="e.g. Save 10+ hours per week on outreach with AI that finds and writes to your ideal customers"
-                            className="text-sm min-h-[60px] resize-none"
-                            rows={2}
-                          />
-                        </div>
+                            <div className="space-y-1.5">
+                              <Label className="text-xs">What does your company do?</Label>
+                              <Textarea
+                                value={profileForm.company_description}
+                                onChange={(e) => updateProfileField("company_description", e.target.value)}
+                                placeholder="e.g. We build AI-powered sales tools for B2B SaaS companies"
+                                className="text-sm min-h-[60px] resize-none"
+                                rows={2}
+                              />
+                            </div>
 
-                        <div className="pt-4 border-t">
-                          <h3 className="text-sm font-semibold mb-1">Ideal Customer Profile (ICP)</h3>
-                          <p className="text-xs text-muted-foreground mb-3">
-                            Define who your ideal customers are. The agent uses this for research and outreach.
-                          </p>
-                        </div>
+                            <div className="space-y-1.5">
+                              <Label className="text-xs">What problem do you solve?</Label>
+                              <Textarea
+                                value={profileForm.problem_solved}
+                                onChange={(e) => updateProfileField("problem_solved", e.target.value)}
+                                placeholder="e.g. Founders waste hours manually researching prospects and writing cold emails"
+                                className="text-sm min-h-[60px] resize-none"
+                                rows={2}
+                              />
+                            </div>
 
-                        <div className="space-y-1.5">
-                          <Label className="text-xs">Target Roles</Label>
-                          <Input
-                            value={rawRoles}
-                            onChange={(e) => { setRawRoles(e.target.value); setProfileDirty(true); }}
-                            onBlur={() => updateProfileField("target_roles", rawRoles.split(",").map(s => s.trim()).filter(Boolean))}
-                            placeholder="e.g. CEO, CPA, Doctor, Lawyer"
-                            className="text-sm"
-                          />
-                          <p className="text-[10px] text-muted-foreground">Comma-separated list of roles to target</p>
-                        </div>
+                            <div className="space-y-1.5">
+                              <Label className="text-xs">Email tone</Label>
+                              <div className="flex gap-2">
+                                {["professional", "casual", "friendly", "direct"].map((t) => (
+                                  <button
+                                    key={t}
+                                    onClick={() => updateProfileField("tone", t)}
+                                    className={`text-xs px-3 py-1.5 rounded-full border transition-colors capitalize ${
+                                      profileForm.tone === t
+                                        ? "bg-primary text-primary-foreground border-primary"
+                                        : "hover:bg-accent border-muted-foreground/20"
+                                    }`}
+                                  >
+                                    {t}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
 
-                        <div className="space-y-1.5">
-                          <Label className="text-xs">Target Industries</Label>
-                          <Input
-                            value={rawIndustries}
-                            onChange={(e) => { setRawIndustries(e.target.value); setProfileDirty(true); }}
-                            onBlur={() => updateProfileField("target_industries", rawIndustries.split(",").map(s => s.trim()).filter(Boolean))}
-                            placeholder="e.g. SaaS, Healthcare, Legal"
-                            className="text-sm"
-                          />
-                        </div>
+                            <div className="space-y-1.5">
+                              <Label className="text-xs">Key message / value proposition</Label>
+                              <Textarea
+                                value={profileForm.key_message}
+                                onChange={(e) => updateProfileField("key_message", e.target.value)}
+                                placeholder="e.g. Save 10+ hours per week on outreach with AI that finds and writes to your ideal customers"
+                                className="text-sm min-h-[60px] resize-none"
+                                rows={2}
+                              />
+                            </div>
 
-                        <div className="space-y-1.5">
-                          <Label className="text-xs">Company Size / Stage</Label>
-                          <div className="flex gap-2">
-                            <Input
-                              value={profileForm.company_size || ""}
-                              onChange={(e) => updateProfileField("company_size", e.target.value)}
-                              placeholder="e.g. 10-200 employees"
-                              className="text-sm flex-1"
-                            />
-                            <Input
-                              value={profileForm.company_stage || ""}
-                              onChange={(e) => updateProfileField("company_stage", e.target.value)}
-                              placeholder="e.g. Series A, Growth"
-                              className="text-sm flex-1"
-                            />
+                            <div className="pt-4 border-t">
+                              <h3 className="text-sm font-semibold mb-1">Problem Discovery</h3>
+                              <p className="text-xs text-muted-foreground mb-3">
+                                These fields power the hypothesis-driven discovery engine.
+                              </p>
+                            </div>
+
+                            <div className="space-y-1.5">
+                              <Label className="text-xs">Problem Statement</Label>
+                              <Textarea
+                                value={profileForm.problem_statement}
+                                onChange={(e) => updateProfileField("problem_statement", e.target.value)}
+                                placeholder="e.g. Small business owners waste 10+ hours/week on manual bookkeeping"
+                                className="text-sm min-h-[60px] resize-none"
+                                rows={2}
+                              />
+                            </div>
+
+                            <div className="space-y-1.5">
+                              <Label className="text-xs">Audience Description</Label>
+                              <Textarea
+                                value={profileForm.audience_description}
+                                onChange={(e) => updateProfileField("audience_description", e.target.value)}
+                                placeholder="e.g. Solo founders and small teams (1-20 people) in SaaS"
+                                className="text-sm min-h-[60px] resize-none"
+                                rows={2}
+                              />
+                            </div>
+
+                            <div className="space-y-1.5">
+                              <Label className="text-xs">Signals to Look For</Label>
+                              <Input
+                                value={rawSignals}
+                                onChange={(e) => { setRawSignals(e.target.value); setProfileDirty(true); }}
+                                onBlur={() => updateProfileField("signals", rawSignals.split(",").map(s => s.trim()).filter(Boolean))}
+                                placeholder="e.g. hiring for SDRs, launched on Product Hunt"
+                                className="text-sm"
+                              />
+                              <p className="text-[10px] text-muted-foreground">Comma-separated observable behaviors</p>
+                            </div>
+
+                            <div className="pt-4 border-t">
+                              <h3 className="text-sm font-semibold mb-1">Ideal Customer Profile (ICP)</h3>
+                              <p className="text-xs text-muted-foreground mb-3">
+                                Refine targeting with traditional ICP fields.
+                              </p>
+                            </div>
+
+                            <div className="space-y-1.5">
+                              <Label className="text-xs">Target Roles</Label>
+                              <Input
+                                value={rawRoles}
+                                onChange={(e) => { setRawRoles(e.target.value); setProfileDirty(true); }}
+                                onBlur={() => updateProfileField("target_roles", rawRoles.split(",").map(s => s.trim()).filter(Boolean))}
+                                placeholder="e.g. CEO, CPA, Doctor, Lawyer"
+                                className="text-sm"
+                              />
+                            </div>
+
+                            <div className="space-y-1.5">
+                              <Label className="text-xs">Target Industries</Label>
+                              <Input
+                                value={rawIndustries}
+                                onChange={(e) => { setRawIndustries(e.target.value); setProfileDirty(true); }}
+                                onBlur={() => updateProfileField("target_industries", rawIndustries.split(",").map(s => s.trim()).filter(Boolean))}
+                                placeholder="e.g. SaaS, Healthcare, Legal"
+                                className="text-sm"
+                              />
+                            </div>
+
+                            <div className="space-y-1.5">
+                              <Label className="text-xs">Company Size / Stage</Label>
+                              <div className="flex gap-2">
+                                <Input
+                                  value={profileForm.company_size || ""}
+                                  onChange={(e) => updateProfileField("company_size", e.target.value)}
+                                  placeholder="e.g. 10-200 employees"
+                                  className="text-sm flex-1"
+                                />
+                                <Input
+                                  value={profileForm.company_stage || ""}
+                                  onChange={(e) => updateProfileField("company_stage", e.target.value)}
+                                  placeholder="e.g. Series A, Growth"
+                                  className="text-sm flex-1"
+                                />
+                              </div>
+                            </div>
+
+                            <div className="space-y-1.5">
+                              <Label className="text-xs">ICP Keywords</Label>
+                              <Input
+                                value={rawKeywords}
+                                onChange={(e) => { setRawKeywords(e.target.value); setProfileDirty(true); }}
+                                onBlur={() => updateProfileField("icp_keywords", rawKeywords.split(",").map(s => s.trim()).filter(Boolean))}
+                                placeholder="e.g. AI, automation, B2B"
+                                className="text-sm"
+                              />
+                            </div>
+
+                            <div className="space-y-1.5">
+                              <Label className="text-xs">Messaging Notes</Label>
+                              <Textarea
+                                value={profileForm.messaging_notes || ""}
+                                onChange={(e) => updateProfileField("messaging_notes", e.target.value)}
+                                placeholder="Any additional context for how emails should be written..."
+                                className="text-sm min-h-[60px] resize-none"
+                                rows={2}
+                              />
+                            </div>
                           </div>
-                        </div>
-
-                        <div className="space-y-1.5">
-                          <Label className="text-xs">ICP Keywords</Label>
-                          <Input
-                            value={rawKeywords}
-                            onChange={(e) => { setRawKeywords(e.target.value); setProfileDirty(true); }}
-                            onBlur={() => updateProfileField("icp_keywords", rawKeywords.split(",").map(s => s.trim()).filter(Boolean))}
-                            placeholder="e.g. AI, automation, B2B, tax planning"
-                            className="text-sm"
-                          />
-                        </div>
-
-                        <div className="space-y-1.5">
-                          <Label className="text-xs">Messaging Notes</Label>
-                          <Textarea
-                            value={profileForm.messaging_notes || ""}
-                            onChange={(e) => updateProfileField("messaging_notes", e.target.value)}
-                            placeholder="Any additional context for how emails should be written..."
-                            className="text-sm min-h-[60px] resize-none"
-                            rows={2}
-                          />
-                        </div>
+                        )}
 
                         <Button
                           size="sm"
@@ -496,9 +712,11 @@ export default function MoraCommandBar() {
 
                     {/* Prospects list */}
                     {campaignState.prospects.length > 0 && (() => {
-                      // Only show valid prospects with emails
-                      const validProspects = campaignState.prospects.filter((p) => p.email && p.name);
+                      // Show all prospects (with and without email)
+                      const validProspects = campaignState.prospects.filter((p) => p.name);
                       if (validProspects.length === 0) return null;
+                      const withEmail = validProspects.filter(p => p.email);
+                      const withoutEmail = validProspects.filter(p => !p.email);
                       return (
                         <ScrollArea className="flex-1">
                           <div className="p-3 space-y-1">
@@ -507,7 +725,7 @@ export default function MoraCommandBar() {
                             </p>
                             {searchStats && (
                               <p className="text-[10px] text-muted-foreground px-2 mb-2">
-                                {searchStats.queriesUsed} searches · {validProspects.length} with verified emails
+                                {searchStats.queriesUsed} searches · {withEmail.length} with email{withoutEmail.length > 0 ? ` · ${withoutEmail.length} profile-only` : ""}
                               </p>
                             )}
                             {validProspects.map((prospect) => (
@@ -522,7 +740,11 @@ export default function MoraCommandBar() {
                                   <div className="min-w-0">
                                     <div className="flex items-center gap-2">
                                       <p className="font-medium truncate">{prospect.name}</p>
-                                      <span className="text-[10px] text-muted-foreground truncate shrink-0">{prospect.email}</span>
+                                      {prospect.email ? (
+                                        <span className="text-[10px] text-muted-foreground truncate shrink-0">{prospect.email}</span>
+                                      ) : (
+                                        <span className="text-[10px] text-yellow-600 truncate shrink-0">no email</span>
+                                      )}
                                     </div>
                                     <p className="text-xs text-muted-foreground truncate">
                                       {prospect.company ? `${prospect.title || ""} at ${prospect.company}`.trim() : prospect.summary || ""}
@@ -684,6 +906,14 @@ export default function MoraCommandBar() {
                                     </div>
                                   )}
 
+                                  {/* Introduction suggestion for prospects without email */}
+                                  {!prospect.email && (prospect as any).introduction_suggestion && (
+                                    <div className="border rounded-lg p-3 space-y-1.5 bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800">
+                                      <p className="text-xs font-medium text-blue-700 dark:text-blue-300">Introduction suggestion</p>
+                                      <p className="text-xs text-blue-600 dark:text-blue-400">{(prospect as any).introduction_suggestion.reason}</p>
+                                    </div>
+                                  )}
+
                                   {prospect.risk_flags.length > 0 && (
                                     <div className="flex flex-wrap gap-1">
                                       {prospect.risk_flags.map((flag, i) => (
@@ -803,7 +1033,7 @@ export default function MoraCommandBar() {
                             ))}
                           </div>
                         )}
-                        {isReview && (
+                        {(isReview || isCompleted) && (
                           <div className="space-y-2">
                             <div className="flex items-center gap-2 flex-wrap">
                               <span className="text-xs text-muted-foreground shrink-0">Send:</span>
@@ -1012,14 +1242,43 @@ export default function MoraCommandBar() {
                   </div>
                 )}
 
+                {/* Prompt helper */}
+                {showPromptHelper && isIdle && (
+                  <div className="bg-accent/50 border border-border/40 rounded-lg p-3 text-xs space-y-2">
+                    <div className="flex items-center justify-between">
+                      <p className="font-medium text-foreground">How to prompt Mora effectively</p>
+                      <button onClick={() => setShowPromptHelper(false)} className="text-muted-foreground hover:text-foreground">
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                    <p className="text-muted-foreground">Describe the <span className="font-medium text-foreground">problem</span> your product solves, the <span className="font-medium text-foreground">audience</span> who has it, and <span className="font-medium text-foreground">signals</span> that indicate someone needs help.</p>
+                    <div className="space-y-1.5">
+                      <button onClick={() => { setInput("Find startup founders who recently launched a product and are struggling to get their first customers"); setShowPromptHelper(false); }} className="block w-full text-left px-2 py-1.5 rounded bg-background hover:bg-accent transition-colors text-muted-foreground">
+                        "Find startup founders who recently launched and are struggling to get first customers"
+                      </button>
+                      <button onClick={() => { setInput("Find marketing agency owners who are manually sending cold emails and need automation"); setShowPromptHelper(false); }} className="block w-full text-left px-2 py-1.5 rounded bg-background hover:bg-accent transition-colors text-muted-foreground">
+                        "Find marketing agency owners who are manually sending cold emails"
+                      </button>
+                      <button onClick={() => { setInput("Find dentists and dental practice owners looking to attract new patients"); setShowPromptHelper(false); }} className="block w-full text-left px-2 py-1.5 rounded bg-background hover:bg-accent transition-colors text-muted-foreground">
+                        "Find dentists looking to attract new patients"
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {/* Input row */}
                 <div className="flex items-end gap-2">
+                  {isIdle && !showPromptHelper && (
+                    <button onClick={() => setShowPromptHelper(true)} className="h-[40px] w-[40px] shrink-0 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors" title="How to prompt Mora">
+                      <HelpCircle className="h-4 w-4" />
+                    </button>
+                  )}
                   <Textarea
                     ref={inputRef}
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     onKeyDown={handleKeyDown}
-                    placeholder={isIdle ? "Tell Mora what campaign to run..." : "Send a follow-up command..."}
+                    placeholder={isIdle ? "Describe who has the problem your product solves..." : "Send a follow-up command..."}
                     className="min-h-[40px] max-h-[100px] resize-none rounded-xl border-muted-foreground/20 px-4 py-2.5 text-sm"
                     rows={1}
                     disabled={isRunning}

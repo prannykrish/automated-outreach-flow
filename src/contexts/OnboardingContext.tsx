@@ -249,11 +249,14 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     }
   }, [emailUsage, org]);
 
-  // Toast: onboarding complete
+  // Toast: onboarding complete — only show if completed within the last 10 seconds (i.e. just now)
   useEffect(() => {
     if (!notifiedComplete.current && progress?.completed_at && !progress.dismissed) {
-      notifiedComplete.current = true;
-      toast({ title: "Setup complete!", description: "You're all set up. Time to start reaching out." });
+      const completedAge = Date.now() - new Date(progress.completed_at).getTime();
+      if (completedAge < 10_000) {
+        notifiedComplete.current = true;
+        toast({ title: "Setup complete!", description: "You're all set up. Time to start reaching out." });
+      }
     }
   }, [progress?.completed_at]);
 

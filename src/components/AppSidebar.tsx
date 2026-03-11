@@ -1,9 +1,10 @@
+import { useEffect } from "react";
 import { Mail, GitBranch, UserPlus, BarChart3, LineChart, Settings, LogOut, Building, ShieldCheck, CreditCard, Inbox, Rocket } from "lucide-react";
 
 import Logo from "@/components/Logo";
 import { NavLink } from "@/components/NavLink";
 import { useAuth } from "@/contexts/AuthContext";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import {
   Sidebar,
@@ -40,6 +41,7 @@ export function AppSidebar() {
   const { state } = useSidebar();
   const { user, profile, signOut, organizationId } = useAuth();
   const isCollapsed = state === "collapsed";
+  const queryClient = useQueryClient();
 
   // Unread inbox count
   const { data: unreadCount } = useQuery({
@@ -55,6 +57,31 @@ export function AppSidebar() {
     enabled: !!organizationId,
     refetchInterval: 30000,
   });
+
+  // Real-time subscription for instant unread badge updates
+  useEffect(() => {
+    if (!organizationId) return;
+    const channel = supabase
+      .channel("inbox-unread-realtime")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "inbound_emails",
+          filter: `organization_id=eq.${organizationId}`,
+        },
+        () => {
+          queryClient.invalidateQueries({ queryKey: ["inbox-unread", organizationId] });
+          queryClient.invalidateQueries({ queryKey: ["inbox-inbound"] });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [organizationId, queryClient]);
 
   // Check if user is an admin of their organization
   const { data: membership } = useQuery({

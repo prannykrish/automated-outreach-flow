@@ -30,3 +30,6 @@ nul
 .env
 .env.local
 .env.production
+
+# Internal docs
+MORA_ARCHITECTURE.md
