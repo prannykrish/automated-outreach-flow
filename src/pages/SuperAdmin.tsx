@@ -365,8 +365,8 @@ export default function SuperAdmin() {
 
   const PLAN_CONFIGS: Record<string, { plan_email_limit: number; plan_domain_limit: number; plan_email_address_limit: number; plan_member_limit: number; plan_campaign_limit: number; billing_status: string }> = {
     trial: { plan_email_limit: 200, plan_domain_limit: 1, plan_email_address_limit: 2, plan_member_limit: 3, plan_campaign_limit: 5, billing_status: "active" },
-    starter: { plan_email_limit: 1000, plan_domain_limit: 1, plan_email_address_limit: 2, plan_member_limit: 3, plan_campaign_limit: 5, billing_status: "active" },
-    growth: { plan_email_limit: 5000, plan_domain_limit: 3, plan_email_address_limit: 5, plan_member_limit: 10, plan_campaign_limit: 20, billing_status: "active" },
+    starter: { plan_email_limit: 2000, plan_domain_limit: 1, plan_email_address_limit: 2, plan_member_limit: 3, plan_campaign_limit: 9999, billing_status: "active" },
+    growth: { plan_email_limit: 10000, plan_domain_limit: 3, plan_email_address_limit: 5, plan_member_limit: 10, plan_campaign_limit: 9999, billing_status: "active" },
     enterprise: { plan_email_limit: 99999, plan_domain_limit: 100, plan_email_address_limit: 100, plan_member_limit: 999, plan_campaign_limit: 9999, billing_status: "active" },
   };
 

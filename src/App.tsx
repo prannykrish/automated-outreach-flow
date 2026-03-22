@@ -27,6 +27,7 @@ import Billing from "./pages/Billing";
 import Onboarding from "./pages/Onboarding";
 import Agent from "./pages/Agent";
 import Inbox from "./pages/Inbox";
+import Contact from "./pages/Contact";
 
 function HomeRoute() {
   const { session, loading } = useAuth();
@@ -68,6 +69,7 @@ const App = () => (
               <Route path="/terms" element={<TermsOfService />} />
               <Route path="/privacy" element={<PrivacyPolicy />} />
               <Route path="/onboarding" element={<OnboardingRoute />} />
+              <Route path="/contact" element={<Contact />} />
 
               <Route path="/" element={<HomeRoute />} />
 

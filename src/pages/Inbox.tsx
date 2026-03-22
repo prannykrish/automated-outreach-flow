@@ -9,7 +9,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Search, Send, Mail, Clock, Eye, MessageSquare, AlertCircle, ChevronLeft, ChevronRight, Loader2, Inbox as InboxIcon, Plus, X, Users, PanelLeftClose, PanelLeft, ArrowDownLeft, ArrowUpRight, RefreshCw } from "lucide-react";
+import { Search, Send, Mail, Clock, Eye, MessageSquare, AlertCircle, ChevronLeft, ChevronRight, Loader2, Inbox as InboxIcon, Plus, X, Users, PanelLeftClose, PanelLeft, ArrowDownLeft, ArrowUpRight, RefreshCw, FileText, Folder, ChevronDown } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useToast } from "@/hooks/use-toast";
 import { format, formatDistanceToNow } from "date-fns";
 
@@ -54,33 +55,66 @@ function normalizeSubject(subject: string | null): string {
 }
 
 function groupIntoThreads(emails: UnifiedEmail[]): EmailThread[] {
-  // Build a map of outbound email id → thread key for reply linking
-  const outboundKeyMap = new Map<string, string>();
-  const threadGroups = new Map<string, UnifiedEmail[]>();
+  // Union-find to group emails by conversation using in_reply_to_log_id chains
+  const emailById = new Map<string, UnifiedEmail>();
+  const parent = new Map<string, string>();
 
-  // First pass: assign thread keys to outbound emails
   for (const e of emails) {
-    if (e.direction === "out") {
-      const contact = e.contactEmail.toLowerCase();
-      const subjectKey = normalizeSubject(e.subject) || "_no_subject";
-      const key = `${contact}::${subjectKey}`;
-      outboundKeyMap.set(e.id, key);
+    emailById.set(e.id, e);
+    parent.set(e.id, e.id);
+  }
+
+  function find(id: string): string {
+    while (parent.get(id) !== id) {
+      parent.set(id, parent.get(parent.get(id)!)!);
+      id = parent.get(id)!;
+    }
+    return id;
+  }
+
+  function union(a: string, b: string) {
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  }
+
+  // Link emails that reference each other via in_reply_to_log_id
+  for (const e of emails) {
+    if (e.inReplyToLogId && emailById.has(e.inReplyToLogId)) {
+      union(e.id, e.inReplyToLogId);
     }
   }
 
-  // Second pass: group all emails, using in_reply_to_log_id to link replies to their conversation
+  // Group emails by their root in the union-find
+  const chainGroups = new Map<string, UnifiedEmail[]>();
+  // Track which emails are part of a multi-email chain
+  const inChain = new Set<string>();
+
   for (const e of emails) {
-    let key: string;
+    const root = find(e.id);
+    if (!chainGroups.has(root)) chainGroups.set(root, []);
+    chainGroups.get(root)!.push(e);
+  }
 
-    if (e.direction === "in" && e.inReplyToLogId && outboundKeyMap.has(e.inReplyToLogId)) {
-      // This inbound email is a reply to a known outbound — use the same thread key
-      key = outboundKeyMap.get(e.inReplyToLogId)!;
-    } else {
-      const contact = e.contactEmail.toLowerCase();
-      const subjectKey = normalizeSubject(e.subject) || "_no_subject";
-      key = `${contact}::${subjectKey}`;
+  // Separate chain-linked groups from singletons
+  const threadGroups = new Map<string, UnifiedEmail[]>();
+
+  for (const [root, group] of chainGroups) {
+    if (group.length > 1) {
+      // Multi-email chain: use root email's id as thread key to keep it unique
+      const threadKey = `chain::${root}`;
+      threadGroups.set(threadKey, group);
+      for (const e of group) inChain.add(e.id);
     }
+  }
 
+  // For singletons (not linked by in_reply_to_log_id), group by contact_email + subject
+  for (const e of emails) {
+    if (inChain.has(e.id)) continue;
+    const contact = e.contactEmail.toLowerCase();
+    const subjectKey = normalizeSubject(e.subject) || `_standalone_${e.id}`;
+    const key = `${contact}::${subjectKey}`;
+
+    // Only merge singletons with other singletons via subject, not with chain groups
     if (!threadGroups.has(key)) threadGroups.set(key, []);
     threadGroups.get(key)!.push(e);
   }
@@ -92,7 +126,6 @@ function groupIntoThreads(emails: UnifiedEmail[]): EmailThread[] {
     const contactOut = threadEmails.find((e) => e.direction === "out");
     const contactIn = threadEmails.find((e) => e.direction === "in");
     const contactEmail = contactOut?.contactEmail || contactIn?.contactEmail || latest.contactEmail;
-    // Use the first non-empty subject in the thread for display
     const threadSubject = threadEmails.find((e) => e.subject)?.subject || latest.subject;
 
     threads.push({
@@ -161,6 +194,9 @@ export default function Inbox() {
   const [bulkSharedBody, setBulkSharedBody] = useState("");
   const [bulkSending, setBulkSending] = useState(false);
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
+  const [templatePopoverOpen, setTemplatePopoverOpen] = useState(false);
+  const [topTemplatePopoverOpen, setTopTemplatePopoverOpen] = useState(false);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const itemsPerPage = 25;
 
   // Fetch all emails for this org
@@ -169,7 +205,7 @@ export default function Inbox() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("email_logs")
-        .select("id, customer_id, customer_email, customer_name, subject, body, sender_email, status, sent_at, opened_at, replied_at, resend_id, error_message, template_id, created_at")
+        .select("id, customer_id, customer_email, customer_name, subject, body, sender_email, status, sent_at, opened_at, replied_at, resend_id, error_message, template_id, created_at, in_reply_to_log_id")
         .eq("organization_id", organizationId!)
         .order("sent_at", { ascending: false, nullsFirst: false })
         .limit(500);
@@ -211,6 +247,36 @@ export default function Inbox() {
     refetchInterval: 15000,
   });
 
+  // Fetch email templates for template picker
+  const { data: emailTemplates } = useQuery({
+    queryKey: ["inbox-templates", organizationId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("email_templates")
+        .select("id, name, subject, body, folder_id")
+        .eq("organization_id", organizationId!)
+        .order("name");
+      if (error) throw error;
+      return data || [];
+    },
+    enabled: !!organizationId,
+  });
+
+  // Fetch template folders
+  const { data: templateFolders } = useQuery({
+    queryKey: ["inbox-template-folders", organizationId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("template_folders")
+        .select("id, name")
+        .eq("organization_id", organizationId!)
+        .order("name");
+      if (error) throw error;
+      return data || [];
+    },
+    enabled: !!organizationId,
+  });
+
   // Build unified email list (outbound + inbound) with full data for thread view
   const unifiedList: UnifiedEmail[] = [
     ...(emails || []).map((e: any) => ({
@@ -227,6 +293,7 @@ export default function Inbox() {
       body: e.body,
       customerId: e.customer_id,
       errorMessage: e.error_message,
+      inReplyToLogId: e.in_reply_to_log_id,
     })),
     ...(inboundEmails || []).map((e: any) => ({
       id: e.id,
@@ -314,6 +381,7 @@ export default function Inbox() {
           customer_id: threadCustomerId,
           organization_id: organizationId,
           user_id: user?.id,
+          in_reply_to_log_id: selectedThread.emails.filter((e) => e.direction === "out").pop()?.id || null,
         }),
       });
 
@@ -721,7 +789,78 @@ export default function Inbox() {
                     onChange={(e) => setTopComposeBody(e.target.value)}
                     className="min-h-[180px] resize-none"
                   />
-                  <div className="flex justify-end">
+                  <div className="flex items-center justify-between">
+                    <Popover open={topTemplatePopoverOpen} onOpenChange={setTopTemplatePopoverOpen}>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" size="sm">
+                          <FileText className="h-4 w-4 mr-1.5" />
+                          Templates
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent align="start" className="w-72 p-0">
+                        <ScrollArea className="h-64">
+                          {(emailTemplates || []).length === 0 ? (
+                            <p className="text-sm text-muted-foreground p-3">No templates found</p>
+                          ) : (
+                            <>
+                              {(templateFolders || []).map((folder) => {
+                                const folderTemplates = (emailTemplates || []).filter((t) => t.folder_id === folder.id);
+                                if (folderTemplates.length === 0) return null;
+                                const isExpanded = expandedFolders.has(folder.id);
+                                return (
+                                  <div key={folder.id}>
+                                    <button
+                                      className="w-full flex items-center gap-2 px-3 py-2 text-sm font-medium hover:bg-accent transition-colors"
+                                      onClick={() => setExpandedFolders((prev) => {
+                                        const next = new Set(prev);
+                                        isExpanded ? next.delete(folder.id) : next.add(folder.id);
+                                        return next;
+                                      })}
+                                    >
+                                      <Folder className="h-4 w-4 text-muted-foreground" />
+                                      {folder.name}
+                                      <ChevronDown className={`h-3 w-3 ml-auto text-muted-foreground transition-transform ${isExpanded ? "" : "-rotate-90"}`} />
+                                    </button>
+                                    {isExpanded && folderTemplates.map((t) => (
+                                      <button
+                                        key={t.id}
+                                        className="w-full text-left pl-9 pr-3 py-2 text-sm hover:bg-accent transition-colors"
+                                        onClick={() => {
+                                          if (t.subject) setTopComposeSubject(t.subject);
+                                          setTopComposeBody(t.body.replace(/<[^>]*>/g, ""));
+                                          setTopTemplatePopoverOpen(false);
+                                        }}
+                                      >
+                                        <span>{t.name}</span>
+                                        {t.subject && (
+                                          <p className="text-xs text-muted-foreground truncate mt-0.5">{t.subject}</p>
+                                        )}
+                                      </button>
+                                    ))}
+                                  </div>
+                                );
+                              })}
+                              {(emailTemplates || []).filter((t) => !t.folder_id).map((t) => (
+                                <button
+                                  key={t.id}
+                                  className="w-full text-left px-3 py-2 text-sm hover:bg-accent transition-colors"
+                                  onClick={() => {
+                                    if (t.subject) setTopComposeSubject(t.subject);
+                                    setTopComposeBody(t.body.replace(/<[^>]*>/g, ""));
+                                    setTopTemplatePopoverOpen(false);
+                                  }}
+                                >
+                                  <span>{t.name}</span>
+                                  {t.subject && (
+                                    <p className="text-xs text-muted-foreground truncate mt-0.5">{t.subject}</p>
+                                  )}
+                                </button>
+                              ))}
+                            </>
+                          )}
+                        </ScrollArea>
+                      </PopoverContent>
+                    </Popover>
                     <Button
                       size="sm"
                       disabled={
@@ -1148,7 +1287,78 @@ export default function Inbox() {
                     onChange={(e) => setComposeBody(e.target.value)}
                     className="min-h-[120px] resize-none"
                   />
-                  <div className="flex justify-end">
+                  <div className="flex items-center justify-between">
+                    <Popover open={templatePopoverOpen} onOpenChange={setTemplatePopoverOpen}>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" size="sm">
+                          <FileText className="h-4 w-4 mr-1.5" />
+                          Templates
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent align="start" className="w-72 p-0">
+                        <ScrollArea className="h-64">
+                          {(emailTemplates || []).length === 0 ? (
+                            <p className="text-sm text-muted-foreground p-3">No templates found</p>
+                          ) : (
+                            <>
+                              {(templateFolders || []).map((folder) => {
+                                const folderTemplates = (emailTemplates || []).filter((t) => t.folder_id === folder.id);
+                                if (folderTemplates.length === 0) return null;
+                                const isExpanded = expandedFolders.has(folder.id);
+                                return (
+                                  <div key={folder.id}>
+                                    <button
+                                      className="w-full flex items-center gap-2 px-3 py-2 text-sm font-medium hover:bg-accent transition-colors"
+                                      onClick={() => setExpandedFolders((prev) => {
+                                        const next = new Set(prev);
+                                        isExpanded ? next.delete(folder.id) : next.add(folder.id);
+                                        return next;
+                                      })}
+                                    >
+                                      <Folder className="h-4 w-4 text-muted-foreground" />
+                                      {folder.name}
+                                      <ChevronDown className={`h-3 w-3 ml-auto text-muted-foreground transition-transform ${isExpanded ? "" : "-rotate-90"}`} />
+                                    </button>
+                                    {isExpanded && folderTemplates.map((t) => (
+                                      <button
+                                        key={t.id}
+                                        className="w-full text-left pl-9 pr-3 py-2 text-sm hover:bg-accent transition-colors"
+                                        onClick={() => {
+                                          if (t.subject) setComposeSubject(t.subject);
+                                          setComposeBody(t.body.replace(/<[^>]*>/g, ""));
+                                          setTemplatePopoverOpen(false);
+                                        }}
+                                      >
+                                        <span>{t.name}</span>
+                                        {t.subject && (
+                                          <p className="text-xs text-muted-foreground truncate mt-0.5">{t.subject}</p>
+                                        )}
+                                      </button>
+                                    ))}
+                                  </div>
+                                );
+                              })}
+                              {(emailTemplates || []).filter((t) => !t.folder_id).map((t) => (
+                                <button
+                                  key={t.id}
+                                  className="w-full text-left px-3 py-2 text-sm hover:bg-accent transition-colors"
+                                  onClick={() => {
+                                    if (t.subject) setComposeSubject(t.subject);
+                                    setComposeBody(t.body.replace(/<[^>]*>/g, ""));
+                                    setTemplatePopoverOpen(false);
+                                  }}
+                                >
+                                  <span>{t.name}</span>
+                                  {t.subject && (
+                                    <p className="text-xs text-muted-foreground truncate mt-0.5">{t.subject}</p>
+                                  )}
+                                </button>
+                              ))}
+                            </>
+                          )}
+                        </ScrollArea>
+                      </PopoverContent>
+                    </Popover>
                     <Button
                       size="sm"
                       disabled={!composeSubject.trim() || !composeBody.trim() || sendEmailMutation.isPending}

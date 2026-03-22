@@ -41,11 +41,11 @@ serve(async (req: Request) => {
 
     // Price ID to plan mapping
     const STARTER_PRICE = Deno.env.get("STRIPE_STARTER_PRICE_ID");
-    const GROWTH_PRICE = Deno.env.get("STRIPE_GROWTH_PRICE_ID");
+    const PRO_PRICE = Deno.env.get("STRIPE_PRO_PRICE_ID");
 
     const priceToPlan = (priceId: string) => {
-      if (priceId === STARTER_PRICE) return { plan: "starter", limit: 1000, domainLimit: 1, emailAddressLimit: 2, memberLimit: 3 };
-      if (priceId === GROWTH_PRICE) return { plan: "growth", limit: 5000, domainLimit: 3, emailAddressLimit: 5, memberLimit: 10 };
+      if (priceId === STARTER_PRICE) return { plan: "starter", limit: 2000, domainLimit: 1, emailAddressLimit: 2, memberLimit: 3 };
+      if (priceId === PRO_PRICE) return { plan: "growth", limit: 10000, domainLimit: 3, emailAddressLimit: 5, memberLimit: 10 };
       return { plan: "enterprise", limit: 99999, domainLimit: 100, emailAddressLimit: 100, memberLimit: 999 };
     };
 

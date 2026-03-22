@@ -23,19 +23,18 @@ export default function LandingPricing() {
             Start with a 14-day free trial. No credit card required.
           </p>
         </div>
-        <div className="grid gap-6 md:grid-cols-2 max-w-3xl mx-auto">
+        <div className="grid gap-6 md:grid-cols-3 max-w-4xl mx-auto">
           {/* Starter */}
-          <Card>
+          <Card className="flex flex-col">
             <CardHeader>
               <CardTitle>Starter</CardTitle>
               <CardDescription>For small teams getting started</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <p className="text-3xl font-bold">$19<span className="text-sm font-normal text-muted-foreground">/mo</span></p>
-              <ul className="space-y-2 text-sm text-muted-foreground">
-                <li className="flex items-center gap-2"><Check />1,000 emails / month</li>
-                <li className="flex items-center gap-2"><Check />5 campaign runs / month</li>
-                <li className="flex items-center gap-2"><Check />5 prospects per campaign</li>
+            <CardContent className="flex flex-col flex-1 space-y-4">
+              <p className="text-3xl font-bold">$79<span className="text-sm font-normal text-muted-foreground">/mo</span></p>
+              <ul className="space-y-2 text-sm text-muted-foreground flex-1">
+                <li className="flex items-center gap-2"><Check />2,000 emails / month</li>
+                <li className="flex items-center gap-2"><Check />50 prospects per campaign</li>
                 <li className="flex items-center gap-2"><Check />1 domain</li>
                 <li className="flex items-center gap-2"><Check />2 sending emails</li>
                 <li className="flex items-center gap-2"><Check />3 team members</li>
@@ -48,21 +47,20 @@ export default function LandingPricing() {
             </CardContent>
           </Card>
 
-          {/* Plus */}
-          <Card className="border-primary relative">
+          {/* Pro */}
+          <Card className="border-primary relative flex flex-col">
             <div className="absolute -top-3 left-1/2 -translate-x-1/2">
               <Badge className="bg-primary text-primary-foreground">Popular</Badge>
             </div>
             <CardHeader>
-              <CardTitle>Plus</CardTitle>
+              <CardTitle>Pro</CardTitle>
               <CardDescription>For scaling teams</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <p className="text-3xl font-bold">$49<span className="text-sm font-normal text-muted-foreground">/mo</span></p>
-              <ul className="space-y-2 text-sm text-muted-foreground">
-                <li className="flex items-center gap-2"><Check />5,000 emails / month</li>
-                <li className="flex items-center gap-2"><Check />20 campaign runs / month</li>
-                <li className="flex items-center gap-2"><Check />5 prospects per campaign</li>
+            <CardContent className="flex flex-col flex-1 space-y-4">
+              <p className="text-3xl font-bold">$149<span className="text-sm font-normal text-muted-foreground">/mo</span></p>
+              <ul className="space-y-2 text-sm text-muted-foreground flex-1">
+                <li className="flex items-center gap-2"><Check />10,000 emails / month</li>
+                <li className="flex items-center gap-2"><Check />500 prospects per campaign</li>
                 <li className="flex items-center gap-2"><Check />3 domains</li>
                 <li className="flex items-center gap-2"><Check />5 sending emails</li>
                 <li className="flex items-center gap-2"><Check />10 team members</li>
@@ -70,6 +68,27 @@ export default function LandingPricing() {
               <div className="pt-2">
                 <Link to="/auth">
                   <Button className="w-full">Get Started</Button>
+                </Link>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Enterprise */}
+          <Card className="flex flex-col">
+            <CardHeader>
+              <CardTitle>Enterprise</CardTitle>
+              <CardDescription>For large organizations</CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-col flex-1 space-y-4">
+              <p className="text-3xl font-bold">Custom</p>
+              <ul className="space-y-2 text-sm text-muted-foreground flex-1">
+                <li className="flex items-center gap-2"><Check />Custom everything</li>
+                <li className="flex items-center gap-2"><Check />Dedicated support</li>
+                <li className="flex items-center gap-2"><Check />Onboarding included</li>
+              </ul>
+              <div className="pt-2">
+                <Link to="/contact">
+                  <Button variant="outline" className="w-full">Contact Us</Button>
                 </Link>
               </div>
             </CardContent>

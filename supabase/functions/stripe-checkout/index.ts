@@ -42,8 +42,8 @@ serve(async (req: Request) => {
 
     // Validate price_id
     const STARTER_PRICE = Deno.env.get("STRIPE_STARTER_PRICE_ID");
-    const GROWTH_PRICE = Deno.env.get("STRIPE_GROWTH_PRICE_ID");
-    if (price_id !== STARTER_PRICE && price_id !== GROWTH_PRICE) {
+    const PRO_PRICE = Deno.env.get("STRIPE_PRO_PRICE_ID");
+    if (price_id !== STARTER_PRICE && price_id !== PRO_PRICE) {
       return new Response(
         JSON.stringify({ error: "Invalid price_id" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }

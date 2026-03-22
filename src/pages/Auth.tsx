@@ -3,7 +3,9 @@ import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
-import { ArrowLeft, Building2 } from "lucide-react";
+import { ArrowLeft, Building2, MailCheck, Loader2, Check, X } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 
@@ -18,6 +20,11 @@ export default function AuthPage() {
   const [lastName, setLastName] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [confirmEmail, setConfirmEmail] = useState(false);
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
+  const [otpCode, setOtpCode] = useState("");
+  const [verifyingOtp, setVerifyingOtp] = useState(false);
+  const [otpError, setOtpError] = useState("");
   const { signIn, signUp } = useAuth();
   const nav = useNavigate();
 
@@ -84,6 +91,44 @@ export default function AuthPage() {
       setLoading(false);
       return;
     }
+    if (mode === "signup") {
+      if (password.length < 8) {
+        setError("Password must be at least 8 characters");
+        setLoading(false);
+        return;
+      }
+      if (!/[A-Z]/.test(password)) {
+        setError("Password must include an uppercase letter");
+        setLoading(false);
+        return;
+      }
+      if (!/[a-z]/.test(password)) {
+        setError("Password must include a lowercase letter");
+        setLoading(false);
+        return;
+      }
+      if (!/[0-9]/.test(password)) {
+        setError("Password must include a number");
+        setLoading(false);
+        return;
+      }
+      if (!/[^A-Za-z0-9]/.test(password)) {
+        setError("Password must include a special character");
+        setLoading(false);
+        return;
+      }
+    }
+
+    // Normalize email: strip "+" aliases (e.g. user+1@gmail.com → user@gmail.com)
+    // This prevents abuse via infinite Gmail aliases
+    const normalizeEmail = (raw: string) => {
+      const [local, domain] = raw.toLowerCase().trim().split("@");
+      if (!local || !domain) return raw.toLowerCase().trim();
+      const stripped = local.split("+")[0];
+      return `${stripped}@${domain}`;
+    };
+    const normalizedEmail = mode === "signup" ? normalizeEmail(email) : email;
+
     try {
       // Store invite token so AuthContext can accept it during fetchOrganization
       if (inviteToken) {
@@ -94,8 +139,15 @@ export default function AuthPage() {
         const res = await signIn(email, password);
         if (res.error) throw res.error;
       } else {
-        const res = await signUp(email, password, { first_name: firstName, last_name: lastName, name: `${firstName} ${lastName}`.trim() });
+        const res = await signUp(normalizedEmail, password, { first_name: firstName, last_name: lastName, name: `${firstName} ${lastName}`.trim() });
         if (res.error) throw res.error;
+
+        // If Supabase email confirmation is enabled, user is returned but no session
+        if (res.data?.user && !res.data?.session) {
+          setConfirmEmail(true);
+          setLoading(false);
+          return;
+        }
       }
 
       // Navigation happens automatically via RequireAuth once AuthContext resolves the org
@@ -103,11 +155,110 @@ export default function AuthPage() {
     } catch (err: any) {
       // Clear the token if auth failed
       if (inviteToken) sessionStorage.removeItem("pending_invite_token");
+
+      // If email isn't confirmed yet, show OTP screen and resend the code
+      if (err.message?.toLowerCase().includes("email not confirmed")) {
+        try {
+          await supabase.auth.resend({ type: "signup", email });
+        } catch (_) { /* ignore resend errors */ }
+        setConfirmEmail(true);
+        setLoading(false);
+        return;
+      }
+
       setError(err.message === "Invalid login credentials" ? "Incorrect email or password" : err.message || "Authentication error");
     } finally {
       setLoading(false);
     }
   };
+
+  const handleVerifyOtp = async () => {
+    if (otpCode.length < 6) return;
+    setVerifyingOtp(true);
+    setOtpError("");
+    try {
+      const normalizedEmail = (() => {
+        const [local, domain] = email.toLowerCase().trim().split("@");
+        if (!local || !domain) return email.toLowerCase().trim();
+        return `${local.split("+")[0]}@${domain}`;
+      })();
+      const { data, error } = await supabase.auth.verifyOtp({
+        email: normalizedEmail,
+        token: otpCode,
+        type: "email",
+      });
+      if (error) throw error;
+      if (data?.session) {
+        nav(inviteToken ? "/templates" : "/pipeline");
+      }
+    } catch (err: any) {
+      setOtpError(err.message || "Invalid verification code");
+    } finally {
+      setVerifyingOtp(false);
+    }
+  };
+
+  const handleResendOtp = async () => {
+    setOtpError("");
+    try {
+      const { error } = await supabase.auth.resend({ type: "signup", email });
+      if (error) throw error;
+      setOtpError(""); // clear any previous error
+    } catch (err: any) {
+      setOtpError(err.message || "Failed to resend code");
+    }
+  };
+
+  if (confirmEmail) {
+    return (
+      <div className="min-h-screen flex items-center justify-center px-4">
+        <div className="w-full max-w-sm text-center space-y-6">
+          <MailCheck className="h-16 w-16 mx-auto text-primary" />
+          <div>
+            <h1 className="text-2xl font-bold">Verify your email</h1>
+            <p className="text-muted-foreground mt-2">
+              We sent a 6-digit code to <strong>{email}</strong>. Enter it below to verify your account.
+            </p>
+          </div>
+          <div className="flex justify-center">
+            <InputOTP maxLength={6} value={otpCode} onChange={setOtpCode}>
+              <InputOTPGroup>
+                <InputOTPSlot index={0} />
+                <InputOTPSlot index={1} />
+                <InputOTPSlot index={2} />
+                <InputOTPSlot index={3} />
+                <InputOTPSlot index={4} />
+                <InputOTPSlot index={5} />
+              </InputOTPGroup>
+            </InputOTP>
+          </div>
+          {otpError && (
+            <p className="text-sm text-red-500">{otpError}</p>
+          )}
+          <Button
+            className="w-full"
+            onClick={handleVerifyOtp}
+            disabled={otpCode.length < 6 || verifyingOtp}
+          >
+            {verifyingOtp ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
+            Verify
+          </Button>
+          <div className="flex flex-col gap-2">
+            <button
+              type="button"
+              onClick={handleResendOtp}
+              className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Didn't get a code? Resend
+            </button>
+            <Button variant="outline" size="sm" onClick={() => { setConfirmEmail(false); setOtpCode(""); setOtpError(""); setMode("signin"); }}>
+              Back to Sign In
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center px-4">
@@ -171,11 +322,51 @@ export default function AuthPage() {
                 <Input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="••••••••" />
               </div>
 
+              {mode === "signup" && password.length > 0 && (
+                <div className="space-y-1 text-xs">
+                  {[
+                    { met: password.length >= 8, label: "At least 8 characters" },
+                    { met: /[A-Z]/.test(password), label: "Uppercase letter" },
+                    { met: /[a-z]/.test(password), label: "Lowercase letter" },
+                    { met: /[0-9]/.test(password), label: "Number" },
+                    { met: /[^A-Za-z0-9]/.test(password), label: "Special character (!@#$...)" },
+                  ].map((req) => (
+                    <div key={req.label} className="flex items-center gap-1.5">
+                      {req.met ? (
+                        <Check className="h-3 w-3 text-green-500" />
+                      ) : (
+                        <X className="h-3 w-3 text-muted-foreground/50" />
+                      )}
+                      <span className={req.met ? "text-green-500" : "text-muted-foreground/50"}>
+                        {req.label}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {mode === "signup" && (
+                <div className="flex items-start gap-2">
+                  <Checkbox
+                    id="terms"
+                    checked={agreedToTerms}
+                    onCheckedChange={(checked) => setAgreedToTerms(checked === true)}
+                    className="mt-0.5"
+                  />
+                  <label htmlFor="terms" className="text-sm text-muted-foreground leading-snug">
+                    I agree to the{" "}
+                    <Link to="/terms" target="_blank" className="underline hover:text-foreground">Terms of Service</Link>
+                    {" "}and{" "}
+                    <Link to="/privacy" target="_blank" className="underline hover:text-foreground">Privacy Policy</Link>
+                  </label>
+                </div>
+              )}
+
               {error && (
                 <p className="text-sm text-red-500 text-center">{error}</p>
               )}
 
-              <Button type="submit" disabled={loading} className="w-full">
+              <Button type="submit" disabled={loading || (mode === "signup" && (!agreedToTerms || !email || !firstName || !lastName || password.length < 8 || !/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/[0-9]/.test(password) || !/[^A-Za-z0-9]/.test(password)))} className="w-full">
                 {loading ? "Loading..." : mode === "signin" ? "Sign In" : "Sign Up"}
               </Button>
             </form>
