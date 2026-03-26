@@ -198,15 +198,6 @@ export default function MoraCommandBar() {
     const text = input.trim();
     if (!text || isRunning) return;
     if (emailMode === "template" && !selectedSequenceId) return;
-
-    // Settings gate: in guided mode, require at least the first guided answer; in manual mode, require company description
-    const hasGuidedSetup = companyProfile?.guided_answers?.what_building || companyProfile?.guided_answers?.problem_solved;
-    const hasManualSetup = companyProfile?.company_description;
-    if (!hasGuidedSetup && !hasManualSetup) {
-      setSettingsGateError("Please fill out your Settings so Mora knows what you're building and who to find.");
-      setShowSettings(true);
-      return;
-    }
     setSettingsGateError(null);
 
     setInput("");
@@ -361,8 +352,13 @@ export default function MoraCommandBar() {
                       <div className="flex items-center justify-between">
                         <div>
                           <h3 className="text-sm font-semibold">Settings</h3>
-                          <p className="text-xs text-muted-foreground">Configure how Mora discovers prospects and writes emails.</p>
                         </div>
+                      </div>
+                      <div className="rounded-lg border border-primary/30 bg-primary/5 p-4 space-y-1">
+                        <p className="text-sm font-medium">These settings are completely optional.</p>
+                        <p className="text-xs text-muted-foreground">
+                          You can close this and just type a prompt — Mora will find prospects based on what you ask. Fill these in if you want Mora to have persistent context about your company for better results every time.
+                        </p>
                       </div>
                       <div className="flex items-center justify-between rounded-lg border p-3 bg-muted/30">
                         <div className="flex items-center gap-2">
@@ -390,7 +386,7 @@ export default function MoraCommandBar() {
                         {profileForm.settings_mode === "guided" ? (
                           <div className="space-y-5">
                             <p className="text-xs text-muted-foreground">
-                              Answer a few questions and Mora will figure out who to find. You can be casual and vague — the system infers the rest.
+                              All optional — answer what you can and Mora will figure out the rest. The more context you give, the better the results.
                             </p>
 
                             <div className="space-y-1.5">
@@ -484,7 +480,7 @@ export default function MoraCommandBar() {
                           /* ═══ MANUAL ICP MODE ═══ */
                           <div className="space-y-5">
                             <p className="text-xs text-muted-foreground">
-                              Full control over your company profile and ICP targeting. All fields are used by the discovery engine and email composer.
+                              All optional — fill in what you know for more targeted results. These fields are used by the discovery engine and email composer.
                             </p>
 
                             <div className="space-y-1.5">

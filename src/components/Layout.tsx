@@ -143,6 +143,14 @@ export function Layout({ children }: LayoutProps) {
               <Button
                 variant="ghost"
                 size="icon"
+                onClick={toggleCommandBar}
+                title="Mora Agent"
+              >
+                <MoraIcon className="h-5 w-5" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
                 onClick={toggleTheme}
                 title={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
               >
